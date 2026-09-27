@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models.commit import Commit
 from app.models.developer import Developer
 from app.models.repository import MiningRun, Repository
+from app.services import mining_service
 from app.services.mining_service import run_mining
 
 from .gitutil import commit_all, init_repo
@@ -30,6 +31,43 @@ def demo_repo(tmp_path: Path) -> dict[str, object]:
     c3 = commit_all(repo, "c3: fix add, fixes #1")
 
     return {"path": repo, "shas": [c1, c2, c3]}
+
+
+@pytest.mark.story("US-04")
+def test_run_mining_clones_a_remote_url_once_and_reuses_it_for_szz(
+    db_session: Session, demo_repo: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test: SZZ used to be called with `repository.url` directly,
+    which crashes for a real remote URL — PyDriller's low-level `Git` class
+    (unlike `Repository`) only accepts a local path, it doesn't auto-clone.
+    Simulates a remote source by faking `git clone` to copy the local fixture
+    repo, and checks git is only ever cloned once."""
+    import shutil
+
+    clone_count = 0
+
+    def fake_clone(cmd: list[str], check: bool = True) -> None:
+        nonlocal clone_count
+        clone_count += 1
+        shutil.copytree(demo_repo["path"], cmd[-1], dirs_exist_ok=True)
+
+    monkeypatch.setattr(mining_service.subprocess, "run", fake_clone)
+
+    repo_row = Repository(name="demo", url="https://example.invalid/org/demo")
+    db_session.add(repo_row)
+    db_session.commit()
+    run = MiningRun(repository_id=repo_row.id, status="pending")
+    db_session.add(run)
+    db_session.commit()
+
+    run_mining(db_session, run.id)
+
+    db_session.refresh(run)
+    assert run.status == "completed"
+    assert clone_count == 1
+
+    commits = list(db_session.scalars(select(Commit).where(Commit.repository_id == repo_row.id)))
+    assert any(c.is_bug_inducing for c in commits)  # proves SZZ actually ran, not just mining
 
 
 @pytest.mark.story("US-02")
