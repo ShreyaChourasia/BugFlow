@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { ApiError, apiFetch, clearTokens } from "@/lib/api";
@@ -83,7 +84,9 @@ export default function RepositoriesPage() {
           <li key={repo.id} className="rounded-md border border-border p-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="font-medium">{repo.name}</p>
+                <Link href={`/repositories/${repo.id}`} className="font-medium underline">
+                  {repo.name}
+                </Link>
                 <p className="text-sm text-muted-foreground">{repo.url}</p>
               </div>
               {isAdmin && (

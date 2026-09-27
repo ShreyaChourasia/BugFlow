@@ -1,12 +1,11 @@
-"""Entry point for the RQ worker container. Jobs (mining, scoring, training) are
-added in later phases; this listens on the default queue so `docker compose up`
-brings up a working worker from Phase 0 onward."""
+"""Entry point for the RQ worker container: mining jobs today, scoring and
+training jobs added in later phases."""
 
-from redis import Redis
-from rq import Queue, Worker
+from rq import Worker
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.queue import get_queue
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -14,10 +13,9 @@ logger = get_logger(__name__)
 
 
 def main() -> None:
-    conn = Redis.from_url(settings.redis_url)
-    queue = Queue("default", connection=conn)
+    queue = get_queue()
     logger.info("bugflow_worker_started")
-    Worker([queue], connection=conn).work()
+    Worker([queue], connection=queue.connection).work()
 
 
 if __name__ == "__main__":
