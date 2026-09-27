@@ -73,6 +73,10 @@ jobs:
           python-version: "3.11"
       - name: Install ml package
         run: pip install -e "./ml[dev]"
+      - name: Lint (ruff)
+        run: cd ml && ruff check .
+      - name: Type check (mypy)
+        run: cd ml && mypy bugflow_ml
       - name: Test
         run: cd ml && pytest
 

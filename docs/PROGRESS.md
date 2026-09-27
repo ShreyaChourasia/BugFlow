@@ -1,5 +1,116 @@
 # Progress log
 
+## Phase 2 — Repository mining and training corpus
+
+**Stories:** US-02 to US-07.
+
+### What was built
+
+- `bugflow_ml.mining.git_miner`: wraps PyDriller's `Repository.traverse_commits()`
+  into a plain `MinedCommit` dataclass stream — chronological, resumable via
+  `after_sha`, works against a local path or a remote URL (PyDriller clones
+  it). Merge commits advance the checkpoint but are never stored as `Commit`
+  rows (their diff is against the wrong parent for JIT-style features).
+- `bugflow_ml.mining.issue_links`: regex-based issue reference extraction
+  (`#123`) and a fix-commit flag (message contains fix/close/resolve, any
+  tense) — no GitHub API calls, so mining works fully offline (US-03).
+- `bugflow_ml.mining.backoff`: exponential-backoff retry wrapper for
+  transient clone/network failures.
+- `bugflow_ml.labeling.szz`: thin wrapper around PyDriller's own
+  `Git.get_commits_last_modified_lines` (a ready-made SZZ implementation —
+  see `docs/ml.md` for what it does and does not handle) (US-04).
+- `bugflow_ml.features.commit_features`: size/diffusion/history/fix-flag
+  features per §8 — churn, files/directories/subsystems touched, an entropy
+  measure of how evenly a commit's changes are spread across files, and the
+  author's prior commit count in the repository (US-06).
+- `app/services/mining_service.py`: the orchestration that ties the above
+  into the database — resolves/creates `Developer` rows from commit author
+  emails, computes features, stores `Commit` rows, runs SZZ labelling for
+  this run's fix commits, and updates `MiningRun.checkpoint` after every
+  commit in the same transaction as that commit — so a crash mid-run loses
+  at most one commit's work and always resumes from a consistent point
+  (US-05). Re-running with the checkpoint carried forward is how incremental
+  ingestion works (US-07) — "start mining" and "resume" are the same
+  operation under the hood, just seeded from a different starting point.
+- API: `POST/GET /repositories/{id}/mining-runs`,
+  `POST /repositories/{id}/mining-runs/{run_id}/resume` (409 unless the run
+  is `failed`), all Admin/ML-Engineer-only. Jobs run on the existing RQ
+  worker (`app/workers/jobs/mining.py`).
+- Schema: `Commit.linked_issue_refs` (new column) and a
+  `(repository_id, sha)` uniqueness constraint — see
+  `docs/decisions/001-issue-refs-on-commit.md`.
+- **Frontend:** a repository detail page (`/repositories/[id]`) showing
+  mining runs with status/progress/error, a "Start mining" button, and a
+  "Resume" button on failed runs.
+- **Tests:** SZZ and feature-computation tests on tiny synthetic git repos
+  built inside the test with known answers (both in `ml/tests` as pure-logic
+  unit tests, and in `backend/tests/test_mining_service.py` as an
+  integration test through the real database); checkpoint/resume and
+  incremental-ingestion tests; RBAC on the mining endpoints.
+
+### Decisions
+
+- **No `Issue` table** — issue references are stored as a plain integer
+  array on `Commit` (ADR 001). Nothing yet needs issue titles/state/history;
+  add a real table when something does.
+- **Whole-history-in-memory retry.** `mining_service.run_mining` materializes
+  the full commit list before processing, inside the backoff-retry wrapper,
+  so a transient clone failure retries cleanly from scratch. Fine at the
+  "one or two demo repos" scale this phase targets — flagged in the code as
+  a `ponytail:` comment for whoever mines something bigger later.
+- **SZZ only runs for fix commits found *by this run*.** A re-mine (US-07)
+  doesn't re-scan already-labelled history, keeping incremental runs cheap.
+  Documented as a limitation in `docs/ml.md`: a bug fixed without ever using
+  a fix/close/resolve keyword is never labelled.
+- **`git` had to be added to the backend Docker image.** PyDriller shells
+  out to the `git` CLI; `python:3.11-slim` doesn't include it. Caught by
+  actually running a mining job in the container, not just unit tests (which
+  ran fine locally where `git` was already on `PATH`).
+- **Chronological sort within a mining run uses `Commit.id`, not
+  `timestamp`.** Git commit timestamps only have one-second resolution, so
+  commits made in quick succession (routine in a synthetic test repo, rare
+  but possible for real ones) can tie. Insertion order is the reliable
+  ordering within one run. This will matter again for Phase 3's chronological
+  train/test split (C9) — noted in `docs/ml.md`.
+
+### Known gaps (expected — later phases)
+
+- No model consumes `Commit.features` yet (Phase 3).
+- SZZ doesn't yet use PyDriller's `hashes_to_ignore_path` to exclude known
+  "cosmetic" (pure reformatting) commits from blame — would need a way to
+  classify commits as cosmetic first, which no phase does yet.
+- `PullRequest`/`RiskPrediction`/`LineRisk` tables still unused (Phase 3-5).
+- Mining runs sequentially inside one RQ job; a very large repository's
+  first (non-incremental) mine will take a while with no progress feedback
+  finer than "N commits processed so far."
+
+### How to demo it
+
+1. Log in as `admin@bugflow.demo` (or `ml-engineer@bugflow.demo`)
+2. Register a repository — a real small public repo works well for a demo,
+   e.g. `https://github.com/octocat/Hello-World` (default branch `master`)
+3. Open its detail page (`/repositories/{id}`), click "Start mining"
+4. Refresh — the run shows `completed` with a commit count once the worker
+   picks it up (`docker compose logs worker -f` to watch it happen live)
+5. Click "Start mining" again — completes immediately, same commit count
+   (nothing new to mine): that's incremental ingestion (US-07) working
+6. `docker exec bugflow-postgres-1 psql -U bugflow -d bugflow -c "select sha, is_fix, is_bug_inducing, linked_issue_refs from commits;"`
+   to see the mined/labelled data directly
+
+### Plain-English notes
+
+- **Why does "Start mining" sometimes finish instantly?** Because it's not
+  starting from scratch — it picks up from wherever the last run for that
+  repository left off (its "checkpoint"). If nothing's been pushed since the
+  last run, there's nothing new to process.
+- **What is SZZ, in one sentence?** For a commit that fixes a bug, look at
+  exactly which earlier commit last touched the lines being fixed — that
+  earlier commit is blamed for introducing the bug.
+- **Why is a merge commit skipped?** A merge commit's "diff" is really a
+  combination of two branches' history, not a single coherent change — the
+  size/diffusion features this phase computes wouldn't mean the same thing
+  for it as they do for a normal commit.
+
 ## Phase 1 — Core data, auth and roles
 
 **Stories:** US-01, US-49.
