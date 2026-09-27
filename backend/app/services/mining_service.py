@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 from datetime import UTC, datetime
 
 from bugflow_ml.features.commit_features import compute_commit_features
@@ -30,6 +33,21 @@ def _get_or_create_developer(
 
     cache[email] = developer
     return developer
+
+
+def _resolve_local_repo_path(url: str) -> tuple[str, tempfile.TemporaryDirectory | None]:
+    """Clones `url` exactly once if it's remote, so the same local checkout
+    can be reused for both the commit walk and every SZZ blame lookup —
+    PyDriller's `Repository` auto-clones a remote URL, but the lower-level
+    `Git` class SZZ uses does not, and would just fail to find a repo there.
+    Returns (local_path, tmp_dir); tmp_dir is None (nothing to clean up) when
+    `url` was already a local path."""
+    if os.path.isdir(url):
+        return url, None
+
+    tmp_dir = tempfile.TemporaryDirectory(prefix="bugflow_mine_")
+    subprocess.run(["git", "clone", "--quiet", url, tmp_dir.name], check=True)
+    return tmp_dir.name, tmp_dir
 
 
 def _seed_author_commit_counts(db: Session, repository_id: int) -> dict[int, int]:
@@ -66,16 +84,20 @@ def run_mining(db: Session, mining_run_id: int) -> None:
     developer_cache: dict[str, Developer] = {}
     author_commit_counts = _seed_author_commit_counts(db, repository.id)
     fix_shas: list[str] = []
+    tmp_dir = None
 
     try:
+        # Clone once (if remote) and reuse the local checkout for both the
+        # commit walk and every SZZ blame lookup below — retried as a unit
+        # since a transient clone failure is the main thing worth retrying.
+        local_path, tmp_dir = retry_with_backoff(lambda: _resolve_local_repo_path(repository.url))
+
         # ponytail: materializes the whole history in memory so a transient
-        # clone/network failure can retry cleanly from scratch. Fine at the
-        # "one or two demo repos" scale this phase targets; move to a
-        # streaming retry if mining a repo large enough for that to matter.
-        commits: list[MinedCommit] = retry_with_backoff(
-            lambda: list(
-                mine_commits(repository.url, after_sha=last_sha, branch=repository.default_branch)
-            )
+        # failure can retry cleanly from scratch. Fine at the "one or two
+        # demo repos" scale this phase targets; move to a streaming retry if
+        # mining a repo large enough for that to matter.
+        commits: list[MinedCommit] = list(
+            mine_commits(local_path, after_sha=last_sha, branch=repository.default_branch)
         )
 
         for mined in commits:
@@ -128,7 +150,7 @@ def run_mining(db: Session, mining_run_id: int) -> None:
         # re-mine for incremental ingestion (US-07) doesn't re-scan history
         # that was already labelled.
         for fix_sha in fix_shas:
-            inducing_shas = find_bug_inducing_shas(repository.url, fix_sha)
+            inducing_shas = find_bug_inducing_shas(local_path, fix_sha)
             if inducing_shas:
                 db.execute(
                     update(Commit)
@@ -146,3 +168,6 @@ def run_mining(db: Session, mining_run_id: int) -> None:
         mining_run.error = str(exc)
         db.commit()
         raise
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()

@@ -1,5 +1,121 @@
 # Progress log
 
+## Phase 3 — Commit risk model, calibration and explanation
+
+**Stories:** US-08 (model part), US-10, US-12, US-34, US-36, US-42, US-44, NFR-US-07, NFR-US-11.
+
+### What was built
+
+- `bugflow_ml.models.commit_risk`: the full training pipeline — chronological
+  split with an explicit leakage test (C9), LightGBM + logistic-regression
+  baseline with class weighting, isotonic calibration, effort-aware
+  `recall_at_20pct_effort`, and a per-tenure fairness report (C10). Pure
+  functions, no MLflow/DB access — independently unit-tested with synthetic
+  data.
+- `bugflow_ml.explain.commit_risk_explainer`: SHAP `TreeExplainer` on the raw
+  LightGBM model, top-3 factors turned into plain sentences. Deterministic by
+  construction (US-36) — no sampling-based SHAP variant used.
+- `app/services/training_service.py`: loads every mined commit (global,
+  cross-repository — `MLModel` has no `repository_id` in §7), trains, logs a
+  complete experiment to MLflow (params, seed, data_version, all metrics,
+  both models as artifacts, and the exact commit-id snapshot used), and
+  promotes the new model to `champion` if it beats the current one on PR-AUC
+  (US-08, US-44, NFR-US-11).
+- `reproduce_run()`: refetches the *exact* commits a run used (via the logged
+  artifact), verifies `data_version` still matches (flags drift instead of
+  silently comparing against changed data), retrains with the same seed, and
+  checks every metric is within 0.5% (C4). Flags a run missing a seed or
+  data_version as non-reproducible rather than mis-scoring it (NFR-US-07).
+- `app/services/prediction_service.py`: loads the champion once, re-loading
+  only when the champion actually changes (US-10); `POST /predict/commit`
+  and `GET /commits/{sha}/risk` (US-12) always persist/return a paired
+  `Explanation` (C3) — enforced with an assertion, not just convention.
+- `scripts/train.py`, `scripts/reproduce_run.py` (exit-code-aware, for
+  `make reproduce`), `scripts/export_experiment.py` (US-44).
+- **Tests:** the leakage test, a reproducibility test (genuine MLflow
+  round-trip via a local SQLite tracking store, not mocked), an
+  explanation-always-present test (C3), and a scoring-latency
+  micro-benchmark (US-10) — distinct from Phase 4's real end-to-end p95 test.
+
+### Decisions
+
+- **`CalibratedClassifierCV(FrozenEstimator(model))`, not
+  `cv="prefit"`.** The `prefit` string value was removed in scikit-learn
+  1.6+; `FrozenEstimator` is the direct replacement. Pinned
+  `scikit-learn>=1.6` accordingly.
+- **MLflow model artifacts logged as `pickle`, not the new default
+  `skops`.** `skops` refuses to load LightGBM's own types without an
+  explicit trust list; since these models are only ever loaded by BugFlow
+  itself (never a third party), plain pickle is simpler and equally safe
+  here.
+- **MLflow's filesystem tracking store is deprecated in 3.x** — tests use
+  `sqlite:///{tmp_path}/mlflow.db` instead (no server needed, MLflow's own
+  recommended lightweight backend).
+- **The docker-compose `mlflow` service needs `--allowed-hosts '*'`.**
+  MLflow 3.x's server rejects the `Host: mlflow:5000` header other
+  containers send by default (DNS-rebinding protection scoped to localhost
+  + raw private IPs, not Compose service names). Safe here since this
+  server is never internet-facing.
+- **`author_prior_commits` and `entropy` explanations state the SHAP
+  direction rather than assert a story.** A real training run showed
+  LightGBM relates these two to risk non-monotonically; the other,
+  reliably-monotonic size/diffusion features keep the confident "higher =
+  riskier" phrasing that matches the master prompt's own example.
+
+### Known gaps (expected — later phases)
+
+- No hyperparameter tuning; a real run on `six` (504 commits) shows the
+  calibrated LightGBM champion underperforming the logistic-regression
+  baseline on PR-AUC — an honest, visible result at this data scale, not
+  swept under the rug. Revisit with more data / tuning if it still matters
+  once real evaluation-scale datasets (§8) are in place.
+- SZZ's `hashes_to_ignore_path` (excluding known-cosmetic commits from
+  blame) still isn't used — same gap noted in Phase 2.
+- No PR-level scoring yet (`RiskPrediction.pr_id` unused) — that's Phase 4.
+- Each test that touches MLflow creates its own fresh SQLite tracking store,
+  which is correctly isolated but re-runs MLflow's ~70-migration schema setup
+  every time (a few seconds each). Fine at this suite's size; would need a
+  shared fixture if the MLflow-touching test count grows much further.
+
+### How to demo it
+
+1. Mine a repository with real bug-fix history (Phase 2) — a tiny repo like
+   `octocat/Hello-World` won't have the ≥20 commits training needs; something
+   like `https://github.com/benjaminp/six` (branch `main`, ~500 commits)
+   mines in well under a minute and has plenty of real fix commits
+2. `docker compose exec api python /app/scripts/train.py` — prints the run
+   id, whether it was promoted to champion, and every metric
+3. `docker compose exec api python /app/scripts/reproduce_run.py --run-id <id>`
+   — confirms it reproduces within 0.5%
+4. `docker compose exec api python /app/scripts/export_experiment.py --run-id <id> --out record.json`
+5. Log in, then:
+   ```
+   curl -X POST http://localhost:8000/predict/commit -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" -d '{"repository_id": <id>, "sha": "<a mined sha>"}'
+   ```
+   — returns probability, calibrated probability, confidence, risk level,
+   and a plain-language explanation with its top-3 factors
+6. `curl "http://localhost:8000/commits/<sha>/risk?repository_id=<id>"` —
+   returns the same prediction read back
+
+### Plain-English notes
+
+- **Why train on every repository at once instead of one model per repo?**
+  The data model's `MLModel` table has no `repository_id` — there's one
+  global champion. This also means a repo with too little history of its own
+  still benefits once other repos have been mined.
+- **Why calibrate at all?** A raw model's "70% risk" often doesn't mean "7 in
+  10 similar changes had bugs" — it's just a score that happens to rank
+  things in a reasonable order. Calibration adjusts those raw scores so the
+  probability number is actually meaningful on its own, which is what lets
+  the UI honestly show "70% risk" as a real frequency rather than an
+  arbitrary score.
+- **Why does the explanation sometimes say a feature "increases" risk in a
+  way that seems backwards (e.g. more prior commits raising risk)?** Tree
+  models can learn genuinely non-monotonic relationships from real data —
+  the explanation reports what the model actually did for this specific
+  prediction, not a simplified assumption about what "should" be true.
+
 ## Phase 2 — Repository mining and training corpus
 
 **Stories:** US-02 to US-07.

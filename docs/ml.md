@@ -75,3 +75,100 @@ Implements the "size, diffusion, history, fix flag" feature families from
 | `is_fix` | fix flag |
 
 No LightGBM/logistic-regression model consumes these yet — that's Phase 3.
+
+## Commit risk model (`bugflow_ml.models.commit_risk`)
+
+`train_commit_risk(commits, seed)` trains on every mined `Commit` in the
+database (not scoped to one repository — `MLModel` has no `repository_id` in
+§7, so champion models are global by design):
+
+1. **Chronological split** (C9): sorts by `(timestamp, id)`, then slices into
+   contiguous train (70%) / calibration (15%) / test (15%) windows. A
+   structural assertion (and a dedicated test) checks every train timestamp
+   precedes every calibration timestamp, which precedes every test
+   timestamp — the actual "leakage test" the phase asks for, not just a
+   comment promising it.
+2. **Models**: LightGBM (`scale_pos_weight` for class imbalance,
+   `deterministic=True, force_row_wise=True, n_jobs=1` for exact
+   reproducibility) as the real model, logistic regression
+   (`class_weight="balanced"`) as the literature-standard baseline. Both are
+   evaluated and logged; only LightGBM is ever served.
+3. **Calibration**: isotonic regression (`CalibratedClassifierCV` +
+   `FrozenEstimator`, sklearn's post-1.6 replacement for the removed
+   `cv="prefit"`), fit on the calibration slice.
+4. **Metrics**: ROC-AUC, PR-AUC, F1, Brier score, and
+   `recall_at_20pct_effort` — the effort-aware recall JIT defect-prediction
+   literature actually uses: rank commits by predicted risk, walk down that
+   ranking until 20% of total *churn* (not commit count) has been "reviewed",
+   and report what fraction of real bug-inducing commits were caught by then.
+5. **Fairness** (C10): `fairness_report()` compares mean predicted risk
+   between contributors with < 6 months and ≥ 6 months of tenure *in this
+   repository* (first mined commit → `Developer.joined_at`, not real-world
+   onboarding date — see Phase 2's PROGRESS.md note). Always returns the same
+   shape (`None` fields, not an absent key, when no tenure data exists), and
+   is logged as part of every training run's metrics, not just computed
+   ad hoc.
+
+**Known limitations:**
+- `author_prior_commits` and `entropy` are the only two features whose
+  explanation sentences don't assert a direction ("more experienced is
+  safer") — real training runs show LightGBM does *not* treat these two
+  monotonically (see the explainability section below), so the code states
+  the observed SHAP direction rather than guessing a story that might be
+  backwards for a given prediction.
+- No hyperparameter search — a single fixed LightGBM config. On the real
+  `six` mining run used to validate this phase, the calibrated LightGBM
+  champion actually scored *worse* on PR-AUC (0.11) than the logistic
+  regression baseline (0.24). That's an honest result from a tiny, heavily
+  imbalanced real dataset (504 commits, 98 labelled bug-inducing) — logged
+  and visible in MLflow rather than hidden, exactly so a real comparison is
+  possible. Revisit once mining a larger corpus (§8's ApacheJIT-scale
+  evaluation) makes the comparison meaningful.
+
+## Explanation (`bugflow_ml.explain.commit_risk_explainer`)
+
+SHAP's exact `TreeExplainer` on the *raw* (uncalibrated) LightGBM model —
+`CalibratedClassifierCV` wraps it opaquely, so SHAP needs the underlying
+model directly. Deterministic by construction (no sampling), which is what
+US-36 actually requires ("the same input must always give the same
+explanation"), not just a nice side effect.
+
+Top-3 factors by `|SHAP value|` become sentences via a per-feature template.
+Size/diffusion features (`churn`, `files_changed`, `directories_touched`,
+`subsystems_touched`, `lines_added`, `lines_deleted`, `is_fix`) use confident
+"higher = riskier" phrasing, matching both JIT literature and the master
+prompt's own example sentence — that relationship is reliably monotonic.
+`entropy` and `author_prior_commits` instead state the SHAP direction
+plainly ("...which increases/decreases the predicted risk") rather than
+assume one, precisely because real runs show tree models can relate them to
+risk non-monotonically (see above).
+
+## Experiment tracking (MLflow)
+
+Every `train_and_register_champion()` call logs a **complete experiment
+record**: params (`seed`, `data_version`, split fractions, sizes, feature
+columns), every metric (including `baseline_*` and `fairness_*`), both
+models as artifacts (`raw_model`, `calibrated_model` — logged with
+`serialization_format="pickle"`, since MLflow 3.x's default `skops` format
+refuses to load LightGBM's own types without an explicit trust list, and
+these models are only ever loaded by BugFlow itself), and a
+`training_commits.json` artifact recording the *exact* commit ids used for
+train/calib/test. `reproduce_run()` uses that artifact to refetch identical
+data (verified via `data_version`, not assumed), re-run the same split with
+the same seed, and check every metric matches within 0.5% (C4) —
+non-reproducible runs (missing seed/data_version, or a `data_version`
+mismatch because the underlying commits changed) are flagged, not silently
+passed (NFR-US-07).
+
+**MLflow version notes** (hit running this phase for real, not just in
+unit tests):
+- MLflow 3.x deprecated the plain filesystem (`file://`) tracking store,
+  requiring either a database backend or an explicit opt-out. Tests use a
+  per-test `sqlite:///{tmp_path}/mlflow.db` URI — no server needed, and it's
+  MLflow's own recommended lightweight backend.
+- The MLflow *server* (the docker-compose `mlflow` service, not the client
+  library) added DNS-rebinding protection that, by default, rejects the
+  `Host: mlflow:5000` header other containers send it — only `localhost` and
+  raw private IPs are allowed by default, not Docker Compose service names.
+  Fixed with `--allowed-hosts '*'`, safe here since this server is never
+  reachable from outside the compose network / localhost.

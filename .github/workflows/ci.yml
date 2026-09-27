@@ -49,6 +49,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install libgomp (LightGBM's OpenMP runtime)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
       - name: Install ml package
         run: pip install -e ./ml
       - name: Install backend
@@ -71,6 +73,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install libgomp (LightGBM's OpenMP runtime)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
       - name: Install ml package
         run: pip install -e "./ml[dev]"
       - name: Lint (ruff)
