@@ -18,6 +18,32 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: bugflow
+          POSTGRES_PASSWORD: bugflow
+          POSTGRES_DB: bugflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bugflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://bugflow:bugflow@localhost:5432/bugflow
+      REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,10 +53,14 @@ jobs:
         run: pip install -e ./ml
       - name: Install backend
         run: pip install -e "./backend[dev]"
+      - name: Enable pgvector extension
+        run: psql "postgresql://bugflow:bugflow@localhost:5432/bugflow" -c "CREATE EXTENSION IF NOT EXISTS vector"
       - name: Lint (ruff)
         run: cd backend && ruff check .
       - name: Type check (mypy)
         run: cd backend && mypy app
+      - name: Apply migrations
+        run: cd backend && alembic upgrade head
       - name: Test with coverage
         run: cd backend && pytest --cov-report=xml
 

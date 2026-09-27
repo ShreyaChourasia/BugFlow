@@ -1,5 +1,122 @@
 # Progress log
 
+## Phase 1 — Core data, auth and roles
+
+**Stories:** US-01, US-49.
+
+### What was built
+
+- SQLAlchemy 2.0 models (`backend/app/models/`) for all 19 entities in §7 —
+  `User`, `Developer`, `Repository`, `MiningRun`, `Commit`, `PullRequest`,
+  `RiskPrediction`, `LineRisk`, `DefectReport`, `TriageAssessment`,
+  `ResolverRecommendation`, `Assignment`, `ResolutionForecast`, `Explanation`,
+  `Feedback`, `MLModel`, `DriftAlert`, `AuditLog`, `SystemConfig` — with only
+  foreign keys, no ORM `relationship()`s yet (added when a later phase actually
+  traverses them). One Alembic migration (`alembic/versions/e8dbf3..._initial_schema.py`)
+  creates all of them, including enabling the `pgvector` extension for
+  `DefectReport.embedding`.
+- JWT auth: `POST /auth/login` (OAuth2 password form, so the FastAPI docs'
+  "Authorize" button works), `POST /auth/refresh`, `POST /auth/logout`
+  (revokes the access token's `jti` in Redis until it would've expired anyway),
+  `GET /auth/me`. Passwords hashed with `bcrypt` directly (not `passlib` — see
+  Decisions).
+- `require_role(*roles)` FastAPI dependency (`app/core/security.py`), applied
+  to every admin-only route.
+- `scripts/seed_demo.py`: one demo user per role (§2), password `bugflow-demo`,
+  safe to re-run.
+- Repository CRUD (`app/api/repositories.py`): list/get open to Admin + ML
+  Engineer, create/update/delete Admin-only.
+- `SystemConfig` key/value store and `AuditLog` (`app/api/admin.py`),
+  Admin-only; every admin write (`create`/`update`/`delete` on Repository or
+  User, `upsert` on SystemConfig) writes an audit log entry
+  (`app/services/audit.py`).
+- **Frontend:** `/login` page, a role-aware nav (`app/nav.tsx`) that shows
+  Repositories / Admin·Users links only to the roles that have them,
+  `/repositories` (list + create + merge-blocking toggle, gated to Admin in
+  the UI) and `/admin/users` (list + create + activate/deactivate).
+- **Tests:** auth flow (login/refresh/logout/me), RBAC 403s (non-admin blocked
+  from repository create and system config), and a dedicated migration test
+  that runs `alembic upgrade head` then `downgrade base` against a *throwaway*
+  database (never the dev DB) to prove the migration is actually clean, not
+  just that models import. CI now runs a Postgres + Redis service container
+  for the backend job.
+
+### Decisions
+
+- **`bcrypt` directly, not `passlib[bcrypt]`.** `passlib` 1.7.4 (last release
+  2020) is incompatible with `bcrypt>=4.1`'s changed wrap-bug self-test and
+  throws `ValueError: password cannot be longer than 72 bytes` on every hash
+  call, even for short passwords — this is `passlib`'s own internal probe
+  string, not the caller's password. Since `passlib`'s abstraction wasn't
+  buying us anything (only one scheme, bcrypt), dropped it for the `bcrypt`
+  package directly.
+- **`User.role` is a plain string, not a Postgres enum** — see the docstring
+  on `app/models/enums.py::Role`. Adding a role later is a one-line change,
+  not an `ALTER TYPE` migration. Same reasoning applies to other status-like
+  columns whose values aren't finalized until later phases (e.g. `DefectReport.severity`,
+  finalized in Phase 7's taxonomy).
+- **No ORM `relationship()`s yet**, only FK columns. Nothing in Phase 1
+  traverses e.g. `Repository.pull_requests`, so adding it now would be
+  speculative; add per-relationship when a later phase's query actually needs
+  the traversal.
+- **Frontend auth uses `window.location.href`, not `router.push`, after
+  login/logout.** Found via manual browser testing: the nav bar reads
+  auth state once on mount, and Next's client-side `router.push` doesn't
+  remount the shared root layout, so the nav kept showing the pre-login state
+  after a successful login until a manual refresh. A hard navigation forces
+  the whole app (nav included) to re-check `localStorage` and `/auth/me`.
+- **Tokens live in `localStorage`, not an httpOnly cookie.** Simpler for a
+  capstone demo login flow; the tradeoff is JS-readable tokens (XSS exposure).
+  Worth revisiting in Phase 10's security pass if there's time.
+- API container now runs `alembic upgrade head` on every startup (Dockerfile
+  `CMD`), so `docker compose up` is still a genuine one-command bring-up with
+  real tables, not just app code with an empty database.
+
+### Known gaps (expected — later phases)
+
+- No mining, ML scoring, triage, or forecasting endpoints yet — those tables
+  exist but are unused until Phases 2–9 fill them in.
+- No `relationship()`s on the models (see Decisions).
+- `make seed` / `make reproduce` — seeding now works (`scripts/seed_demo.py`);
+  `reproduce` still has nothing to call until Phase 3's training pipeline
+  exists.
+- Frontend has no automated test for the login/RBAC UI flows yet (only the
+  Phase 0 health-check Vitest test) — the flow was verified manually in a
+  real browser this phase; a Playwright pass is scheduled for Phase 10 per
+  the master prompt's DoD (§11.11 vs. §10 Phase 10).
+
+### How to demo it
+
+1. `docker compose up -d` (from a clean state, Alembic runs automatically)
+2. `docker compose exec api python /app/scripts/seed_demo.py`
+3. Open http://localhost:3000/login, log in as `admin@bugflow.demo` /
+   `bugflow-demo`
+4. Nav shows Home / Repositories / Admin·Users / your name+role / Log out
+5. `/repositories` — register a repo, toggle merge blocking
+6. `/admin/users` — see all 8 seeded users, create a new one, deactivate one
+7. Log out, then try `curl -X POST http://localhost:8000/repositories ...`
+   as a non-admin token → `403`
+8. `python scripts/list_story_coverage.py` now shows US-01, US-49, US-50 with
+   tests
+
+### Plain-English notes
+
+- **Why does the login endpoint accept form data instead of JSON?** It follows
+  the OAuth2 "password flow" convention FastAPI's own docs UI expects
+  (`username`/`password` fields), so anyone poking at `/docs` can click
+  "Authorize" and try protected routes immediately — no separate JSON login
+  needed just to explore the API.
+- **Why revoke tokens in Redis instead of just deleting them client-side?** A
+  JWT is a self-contained, signed piece of data — the server has no
+  built-in way to "cancel" one before it expires. Recording its ID in Redis
+  with a matching expiry is the standard way to support real logout with
+  short-lived JWTs.
+- **Why a throwaway database for the migration test?** Running
+  `alembic downgrade base` (which drops every table) against the same
+  database other tests use would wipe their data mid-suite. Spinning up
+  `bugflow_migration_test`, migrating it up and down, then dropping it proves
+  the migration works without touching anything else.
+
 ## Phase 0 — Foundations and guardrails
 
 **Stories:** US-50, NFR-US-09, NFR-US-10.
