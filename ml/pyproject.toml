@@ -1,0 +1,22 @@
+[project]
+name = "bugflow_ml"
+version = "0.1.0"
+description = "BugFlow ML package: mining, labeling, features, models, assignment, explain, monitoring, registry"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2", "pytest-cov>=5.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["bugflow_ml*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "story: marks a test as verifying a user story, e.g. story(\"US-04\")",
+]
+testpaths = ["tests"]
