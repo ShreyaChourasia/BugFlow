@@ -26,4 +26,4 @@ See master prompt §6. `backend/` = API + workers. `ml/` = installable `bugflow_
 used by both. `frontend/` = Next.js app. `scripts/` = seeding, replay, perf tests.
 
 ## Status
-Phase 0 in progress/complete — see `docs/PROGRESS.md` for what exists and how to demo it.
+Phase 1 complete (core data, auth, roles) — see `docs/PROGRESS.md` for what exists and how to demo it.
