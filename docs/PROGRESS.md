@@ -1,5 +1,152 @@
 # Progress log
 
+## Phase 4 — GitHub integration: results on the pull request (end of Release 1)
+
+**Stories:** US-08, US-11, US-46, US-47, NFR-US-01, NFR-US-04, NFR-US-05.
+
+### What was built
+
+- `docs/github-app.md`: a full GitHub App setup guide with least-privilege
+  permissions (Checks + Issues read/write, Contents/PRs/Metadata read-only)
+  and the exact webhook/permission/event configuration.
+- **Webhook endpoint** (`POST /webhooks/github`): verifies
+  `X-Hub-Signature-256` (constant-time HMAC compare), handles
+  `pull_request` `opened`/`synchronize`, creates/updates the `PullRequest`
+  row, posts a `pending` check, and enqueues scoring — all before
+  responding, matching §5's flow exactly.
+- **`app/integrations/github/`**: a `GitHubClient` protocol with two
+  implementations — `RealGitHubClient` (JWT App auth → installation token →
+  Checks/Issues REST calls) and `FakeGitHubClient` (the offline "Checks
+  sink" — never makes a network call; whatever it "posts" only ever lives in
+  `PullRequest`'s own state columns, which is what the UI reads either way).
+  `get_github_client()` picks automatically based on whether the App is
+  configured *and* this specific repo has an installation id.
+- **`pr_scoring_service.py`**: scores a PR's head commit by reusing Phase
+  3's `predict_commit` completely unchanged — a PR is just "score this one
+  commit." Fetches the commit live via GitHub's REST API if it hasn't been
+  mined yet; creates a real `Commit` row for it either way, so re-scoring or
+  later mining sees the same data.
+- **Failure handling**, all verified with tests: a hard job timeout leaves
+  the check `pending` (C1 — nothing runs after RQ kills a timed-out job, so
+  there's nothing to leave in a stale state); a caught exception explicitly
+  marks the check `completed`/`neutral`/"unavailable" (C7 — never blocks);
+  no trained model marks `completed`/`neutral`/"no assessment available"
+  (US-08 AC2).
+- **Merge blocking** (US-47): `Repository.merge_blocking_enabled`
+  (already existed, off by default since Phase 1) now actually gates the
+  check's conclusion — `neutral` always when off; `success`/`failure`
+  against `risk_threshold` when on. Verified both ways against the real
+  running stack, not just unit tests.
+- **Offline demo**: `scripts/replay_pr_events.py` builds and HMAC-signs a
+  real webhook payload for an already-mined commit and posts it to the real
+  endpoint — the only thing "fake" is the GitHub on the other end of the
+  write-back.
+- **Frontend**: PR list (`/repositories/[id]/pull-requests`) and detail
+  pages showing check status/conclusion, score, confidence, factors, the
+  explanation, and the exact comment body that was (or would have been)
+  posted.
+- **Performance**: `scripts/perf/webhook_p95.js` (k6), measuring wall-clock
+  time from webhook receipt to the check resolving — see numbers below.
+
+### Decisions
+
+- **New `PullRequest` columns** (`check_status`, `check_conclusion`,
+  `check_summary`, `comment_body`) — ADR
+  `docs/decisions/002-pr-check-state-columns.md`. §7 only had opaque IDs
+  (`check_run_id`, `comment_id`); these four are what both the offline fake
+  sink and the frontend need to show *what* was posted, not just its ID.
+- **A check run is created fresh on every `opened`/`synchronize`**, never
+  reused — GitHub check runs are permanently tied to one `head_sha`, so a
+  new push needs a new one. The **comment** is what persists and gets
+  edited (US-46) via `PullRequest.comment_id`.
+- **No SZZ/mining machinery for a live PR's head commit** — historical
+  bug-inducing labelling doesn't apply to an unmerged commit. Fetching a
+  fresh commit's diff uses GitHub's Commits REST API directly (fast, no
+  clone needed), not the Phase 2 git-mining path.
+- **`mlflow.sklearn.log_model(..., artifact_path=...)`, not MLflow 3.x's
+  new `name=`.** `name=` logs a separate "Logged Model" entity at
+  `models:/<model_id>`, not a plain run artifact — `prediction_service`
+  loads champions via `runs:/<run_id>/<path>`, which needs the classic
+  (deprecated-but-functional) `artifact_path` behavior. Retrained Phase 3's
+  demo champion under the fix; the old one's artifacts are unrecoverable
+  (archived, not deleted, for the record).
+- **`mlflow_data` volume now also mounted into `api`/`worker`, not just
+  `mlflow`.** MLflow's local artifact store writes the artifact_uri as a
+  bare filesystem path, not a proxied `mlflow-artifacts:/` URI — any client
+  loading that artifact reads the path directly off disk, so it needs the
+  exact same mount the server writes to, not just network access to it.
+- **RQ worker switched from `Worker` to `SimpleWorker`** — see the
+  performance section below; this is the single most impactful fix this
+  phase.
+
+### Known gaps (expected — later phases)
+
+- `PullRequest.author_id` is only ever backfilled from a resolved `Commit`'s
+  author (git email), never from the webhook's GitHub username — there's no
+  reliable username→git-email mapping available without additional GitHub
+  API calls this phase doesn't make.
+- No real GitHub App has actually been registered against this codebase —
+  `RealGitHubClient` is tested against a mocked HTTP transport (request
+  construction, auth flow, response parsing all verified), but the true
+  end-to-end "open a PR on real GitHub" path has only been exercised via
+  `docs/github-app.md`'s instructions, not run live. The offline replay path
+  *has* been run live, repeatedly, against the real running stack.
+- Line-level risk highlighting, review queue, and the false-alarm button are
+  Phase 5.
+
+### How to demo it
+
+1. Register a repo with real bug-fix history and mine it (Phase 2), e.g.
+   `https://github.com/benjaminp/six`
+2. Train a champion (Phase 3): `docker compose exec api python /app/scripts/train.py`
+3. Set a `GITHUB_WEBHOOK_SECRET` in `.env` (any random string — it only
+   needs to match between whoever signs the webhook and this endpoint;
+   see `docs/github-app.md` for the real-GitHub version)
+4. Replay a PR event for an already-mined commit:
+   ```bash
+   docker compose exec api python /app/scripts/replay_pr_events.py \
+     --repository-id <id> --sha <a mined sha> --pr-number 101
+   ```
+5. Open `/repositories/<id>/pull-requests` in the UI — see the check
+   resolve (pending → neutral/success/failure) and the full risk breakdown
+6. Toggle `merge_blocking_enabled` on the repo (`PATCH /repositories/{id}`)
+   and replay again against a high-risk commit — watch the conclusion
+   change from `neutral` to `failure`
+
+### Performance — measured honestly, not assumed (C1)
+
+Ran `scripts/perf/webhook_p95.js` against the real running stack (not a
+synthetic estimate), replaying PR events for an already-mined `six` commit:
+
+| Configuration | p95 (webhook receipt → check resolved) | Success rate |
+|---|---|---|
+| 1 VU, **before** fixing the worker's model caching | 2.55s | 100% |
+| 5 VUs, before the fix | **10.07s** (hit the 10s poll timeout) | 65.5% |
+| 1 VU, **after** the fix | **126ms** | 100% |
+| 5 VUs, after the fix | **188ms** | 100% |
+
+**What happened, and why it's reported this way, not hidden:** Phase 3's
+`prediction_service` caches the loaded champion model at module level so
+it's only loaded once (US-10). That caching silently never worked once
+wired into the real RQ worker: RQ's default `Worker` **forks a new child
+process for every job**, so the "module-level cache" started fresh every
+single time — each PR-scoring job was paying the full ~2s MLflow
+artifact-load cost from scratch, and under concurrent load those ~2s jobs
+queued up behind a single worker fast enough to blow past a 10-second
+timeout. This was invisible to every unit test (they call `predict_commit`
+directly, in-process, never through RQ at all) and only showed up when
+actually running the k6 script against the live stack. Switched the worker
+to RQ's `SimpleWorker` (no forking) — a one-line fix that dropped p95 by
+~20x and fixed the failures under concurrency, because the cache now
+actually does what US-10 asked for.
+
+The remaining ~110-125ms per request is almost entirely the HTTP round
+trips themselves (webhook POST + polling GETs, each a few ms) plus one
+real inference + SHAP explanation call — not network-fetch-dominated the
+way the master prompt anticipated might happen, because this phase's
+"fetch the diff" is a single GitHub REST call (or, in the offline/replay
+case, already-mined data), not a full git clone.
+
 ## Phase 3 — Commit risk model, calibration and explanation
 
 **Stories:** US-08 (model part), US-10, US-12, US-34, US-36, US-42, US-44, NFR-US-07, NFR-US-11.

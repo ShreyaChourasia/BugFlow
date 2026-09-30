@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import delete, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.db import Base, engine, get_db
@@ -13,6 +13,7 @@ from app.main import app
 from app.models.commit import Commit
 from app.models.developer import Developer
 from app.models.enums import Role
+from app.models.ml import MLModel
 from app.models.repository import Repository
 from app.models.user import User
 
@@ -42,6 +43,14 @@ def db_session() -> Generator[Session, None, None]:
     def _restart_savepoint(session: Session, transaction: object) -> None:
         if not connection.in_nested_transaction():
             connection.begin_nested()
+
+    # The dev Postgres this runs against also gets used for manual demos
+    # (make train, replay scripts, ...), which leave real committed rows a
+    # test's own rollback can never see away. Model-registry state in
+    # particular ("is there a champion?") needs to start clean every time,
+    # regardless of what's been run against this database outside of tests —
+    # safe to delete here since it's inside this test's own transaction.
+    session.execute(delete(MLModel))
 
     try:
         yield session
