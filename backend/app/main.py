@@ -8,6 +8,7 @@ from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.health import router as health_router
 from app.api.mining import router as mining_router
+from app.api.pull_requests import line_risk_router
 from app.api.pull_requests import router as pull_requests_router
 from app.api.repositories import router as repositories_router
 from app.api.risk import router as risk_router
@@ -42,6 +43,7 @@ app.include_router(users_router)
 app.include_router(repositories_router)
 app.include_router(mining_router)
 app.include_router(pull_requests_router)
+app.include_router(line_risk_router)
 app.include_router(risk_router)
 app.include_router(webhooks_router)
 app.include_router(admin_router)

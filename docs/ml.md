@@ -143,6 +143,70 @@ plainly ("...which increases/decreases the predicted risk") rather than
 assume one, precisely because real runs show tree models can relate them to
 risk non-monotonically (see above).
 
+## Line risk model (`bugflow_ml.models.line_risk`)
+
+JITLine-style: tokenises each *added* line (`re.findall` on a
+identifier/number/punctuation pattern — no external tokenizer dependency),
+vectorises with TF-IDF, and trains a `LogisticRegression`
+(`class_weight="balanced"`) to score individual lines rather than whole
+commits (US-13).
+
+**Weak labelling.** SZZ (above) only labels whole commits as bug-inducing —
+there's no finer-grained ground truth about which exact line within a
+bug-inducing commit actually caused the bug. Every added line in a commit
+inherits that commit's `is_bug_inducing` flag. This is the standard JITLine
+approach, not a shortcut unique to this project: it means a large, mostly-safe
+commit that happens to be labelled bug-inducing will have all of its lines
+(including the safe ones) trained as positive examples, adding label noise
+that a bigger, more diverse training corpus would average out.
+
+**Where the line text comes from.** Phase 2's `Commit` table deliberately
+only stores aggregate features (churn, files_changed, ...), never raw diff
+text — adding it there would bloat every mined commit with code text nothing
+else needs. Phase 5 instead re-walks the exact commits it needs via
+`git_miner.mine_specific_commits()` (PyDriller's `Repository(..., only_commits=shas)`)
+at training and scoring time, re-cloning each repository once per call.
+`ponytail:` this means training and PR-time scoring both pay a full
+re-clone even for one commit; fine at demo scale (a handful of small
+repos), worth caching the checkout (`mining_service._resolve_local_repo_path`
+already does this for the mining phase itself) if line-risk gets used
+against larger repos or scored on every push.
+
+**Training is global**, same as commit-risk (§8/`MLModel` has no
+`repository_id`) — one champion is trained across every mined repository's
+added lines, not per-repo.
+
+**Metrics**: ROC-AUC, PR-AUC, `recall_at_20pct_lines` (of all truly
+bug-inducing lines in the test set, what fraction are captured by the
+riskiest 20% of scored lines — the line-level analogue of commit-risk's
+`recall_at_20pct_effort`), and `top_k_accuracy` (per test commit that has at
+least one positive line, would its top-5 highlighted lines have surfaced
+one — the metric that actually matches US-13's use case, not just a global
+ranking metric). Champion promotion uses `top_k_accuracy` rather than
+PR-AUC, since that's the number that reflects what a reviewer actually sees.
+
+**Explanation (US-14)** needs no SHAP/LIME dependency, unlike the
+commit-risk model's LightGBM: for a *linear* model over TF-IDF features,
+`coefficient[token] * tfidf_value[token]` for each token present in a line
+**is** its exact contribution to that line's score, not an approximation.
+`explain_line()` returns the top-3 tokens by `|contribution|`.
+
+**Trigger and configuration (docs/decisions/003).** Line-level analysis only
+runs once a commit's calibrated commit-risk probability clears
+`Repository.risk_threshold` — the same threshold Phase 4 already uses for
+merge-blocking, not a second independent knob. `Repository.line_risk_top_n`
+(default 5) controls how many ranked lines are shown. Below the threshold,
+the PR comment and API both say line-level analysis didn't run (US-13 AC2)
+rather than silently show nothing.
+
+**Persisted result and feedback (US-15).** Each scored line becomes a
+`LineRisk` row (file, line number, code, score, rank, reason) tied to the
+`RiskPrediction` it came from. A reviewer marking one a false alarm sets
+`LineRisk.marked_false_alarm` and writes a `Feedback` row
+(`decision_type="LineRisk"`) — nothing currently *reads* that feedback back
+into training; it's captured for a future phase to use as a training signal
+or a per-repo precision metric.
+
 ## Experiment tracking (MLflow)
 
 Every `train_and_register_champion()` call logs a **complete experiment

@@ -40,9 +40,7 @@ def _sign(body: bytes, secret: str) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
-def _pull_request_payload(
-    action: str, number: int, head_sha: str, repo_html_url: str
-) -> bytes:
+def _pull_request_payload(action: str, number: int, head_sha: str, repo_html_url: str) -> bytes:
     return json.dumps(
         {
             "action": action,

@@ -5,6 +5,7 @@ backend's mining service) decides how to persist what's yielded here."""
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass
@@ -27,6 +28,29 @@ class MinedCommit:
     lines_deleted: int
     files: list[ModifiedFileInfo]
     is_merge: bool
+
+
+def _to_mined_commit(commit: Any) -> MinedCommit:
+    return MinedCommit(
+        sha=commit.hash,
+        author_name=commit.author.name or "",
+        author_email=commit.author.email or "",
+        message=commit.msg,
+        timestamp=commit.committer_date,
+        lines_added=commit.insertions,
+        lines_deleted=commit.deletions,
+        files=[
+            ModifiedFileInfo(
+                path=mf.new_path or mf.old_path or "",
+                added_lines=len(mf.diff_parsed.get("added", [])),
+                deleted_lines=len(mf.diff_parsed.get("deleted", [])),
+                diff_added=mf.diff_parsed.get("added", []),
+                diff_deleted=mf.diff_parsed.get("deleted", []),
+            )
+            for mf in commit.modified_files
+        ],
+        is_merge=commit.merge,
+    )
 
 
 def mine_commits(
@@ -53,24 +77,18 @@ def mine_commits(
             if commit.hash == after_sha:
                 skipping = False
             continue
+        yield _to_mined_commit(commit)
 
-        yield MinedCommit(
-            sha=commit.hash,
-            author_name=commit.author.name or "",
-            author_email=commit.author.email or "",
-            message=commit.msg,
-            timestamp=commit.committer_date,
-            lines_added=commit.insertions,
-            lines_deleted=commit.deletions,
-            files=[
-                ModifiedFileInfo(
-                    path=mf.new_path or mf.old_path or "",
-                    added_lines=len(mf.diff_parsed.get("added", [])),
-                    deleted_lines=len(mf.diff_parsed.get("deleted", [])),
-                    diff_added=mf.diff_parsed.get("added", []),
-                    diff_deleted=mf.diff_parsed.get("deleted", []),
-                )
-                for mf in commit.modified_files
-            ],
-            is_merge=commit.merge,
-        )
+
+def mine_specific_commits(repo_path: str, shas: list[str]) -> Iterator[MinedCommit]:
+    """Re-walks just the given commits (chronological order) — used to fetch
+    full added-line content for commits that were already mined for their
+    aggregate features (Phase 2 doesn't persist raw line text; Phase 5's
+    line-risk training re-derives it on demand instead of bloating every
+    mined commit with code text nothing else needs)."""
+    from pydriller import Repository
+
+    if not shas:
+        return
+    for commit in Repository(repo_path, only_commits=shas).traverse_commits():
+        yield _to_mined_commit(commit)

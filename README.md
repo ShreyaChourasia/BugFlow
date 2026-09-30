@@ -23,7 +23,7 @@ the phase-by-phase build plan this project follows — lives in
 ## Status
 
 Built phase by phase, each one fully working and demoable before the next
-starts. **Release 1 is complete** (Phases 0–4 of 10) — see
+starts. **Release 1 is complete** (Phases 0–4), and Phase 5 is done — see
 [`docs/PROGRESS.md`](./docs/PROGRESS.md) for exactly what was built, what
 decisions were made and why, and how to demo each phase.
 
@@ -34,7 +34,8 @@ decisions were made and why, and how to demo each phase.
 | 2 | Git mining, SZZ bug-inducing-commit labelling, commit features | ✅ Done |
 | 3 | Commit risk model (LightGBM + calibration), SHAP explanations, MLflow | ✅ Done |
 | 4 | GitHub App integration — risk posted on the actual PR (end of Release 1) | ✅ Done |
-| 5–10 | Line-level risk, triage/duplicates, resolver assignment, forecasting, analytics, model lifecycle | ⏳ Not started |
+| 5 | Line-level risk, review queue, false-alarm feedback | ✅ Done |
+| 6–10 | Triage/duplicates, resolver assignment, forecasting, analytics, model lifecycle | ⏳ Not started |
 
 ## Tech stack
 
@@ -116,6 +117,21 @@ Then open `/repositories/<id>/pull-requests` in the UI — the check resolves
 from `pending` to a conclusion within a couple of seconds, with the full
 risk breakdown and the comment that was (or would have been) posted.
 
+### Line-level highlights and the review queue
+
+Also train the line-risk model, then replay a PR against a commit whose
+calibrated risk clears the repo's `risk_threshold` (lower it via
+`PATCH /repositories/{id}` if needed for the demo):
+
+```bash
+docker compose exec api python /app/scripts/train_line_risk.py
+```
+
+Open the same PR detail page — a "Riskiest lines" section appears with
+expandable rows (token-level reason, a false-alarm button), or, below
+threshold, "did not meet the threshold for line-level analysis." `/review-queue`
+lists every open PR across every repository, riskiest first.
+
 ## Repository structure
 
 ```
@@ -123,8 +139,8 @@ backend/    FastAPI app + RQ workers (installable Python package)
 ml/         bugflow_ml — mining, labelling, features, models, explanations
             (installable, used by both the API and the workers)
 frontend/   Next.js app
-scripts/    seed_demo.py, train.py, reproduce_run.py, export_experiment.py,
-            replay_pr_events.py, perf/ (k6 scripts)
+scripts/    seed_demo.py, train.py, train_line_risk.py, reproduce_run.py,
+            export_experiment.py, replay_pr_events.py, perf/ (k6 scripts)
 docs/       PROGRESS.md, architecture.md, ml.md, github-app.md, decisions/ (ADRs)
 ```
 
@@ -158,7 +174,9 @@ Full interactive docs at `/docs` once the API is running. Implemented so far:
 | `POST/GET /repositories/{id}/mining-runs`, `.../resume` | Trigger and track git mining |
 | `POST /predict/commit`, `GET /commits/{sha}/risk` | Commit risk scoring + explanation |
 | `POST /webhooks/github` | GitHub App webhook (HMAC-signed `pull_request` events) |
-| `GET /repositories/{id}/pull-requests`, `.../{number}` | PR list/detail: check status, risk, comment |
+| `GET /repositories/{id}/pull-requests`, `.../{number}` | PR list/detail: check status, risk, comment, line-level highlights |
+| `POST /line-risks/{id}/false-alarm` | Mark a highlighted line as a false alarm |
+| `GET /review-queue` | Every open PR across all repos, sorted by calibrated risk |
 | `GET/PUT /admin/config`, `GET /admin/audit-log` | System settings (Admin) |
 | `GET/POST/PATCH /users` | User management (Admin) |
 

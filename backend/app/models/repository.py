@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,6 +18,10 @@ class Repository(Base):
     default_branch: Mapped[str] = mapped_column(String(100), default="main")
     merge_blocking_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     risk_threshold: Mapped[float] = mapped_column(Float, default=0.7)
+    # US-13: line-level analysis only runs when calibrated risk clears this
+    # same threshold; N (how many lines to highlight) is configurable here.
+    # Not in the original §7 table — see docs/decisions/003-line-risk-top-n.md.
+    line_risk_top_n: Mapped[int] = mapped_column(Integer, default=5)
 
 
 class MiningRun(Base):
