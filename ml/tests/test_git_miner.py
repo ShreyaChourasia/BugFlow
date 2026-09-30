@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from bugflow_ml.mining.git_miner import mine_commits
+from bugflow_ml.mining.git_miner import mine_commits, mine_specific_commits
 
 from .gitutil import commit_all, init_repo
 
@@ -60,3 +60,21 @@ def test_mine_commits_picks_up_newly_pushed_commits(three_commit_repo: dict[str,
     incremental = list(mine_commits(three_commit_repo["path"], after_sha=shas[-1]))
 
     assert [m.sha for m in incremental] == [new_sha]
+
+
+@pytest.mark.story("US-13")
+def test_mine_specific_commits_filters_and_preserves_order(
+    three_commit_repo: dict[str, object],
+) -> None:
+    shas = three_commit_repo["shas"]
+
+    mined = list(mine_specific_commits(three_commit_repo["path"], [shas[2], shas[0]]))
+
+    assert [m.sha for m in mined] == [shas[0], shas[2]]
+    assert mined[1].files[0].diff_added
+
+
+def test_mine_specific_commits_empty_shas_yields_nothing(
+    three_commit_repo: dict[str, object],
+) -> None:
+    assert list(mine_specific_commits(three_commit_repo["path"], [])) == []

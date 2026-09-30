@@ -51,9 +51,7 @@ def test_me_returns_current_user(client: TestClient, db_session: Session) -> Non
         "/auth/login", data={"username": "dev5@example.com", "password": "s3cret"}
     ).json()
 
-    response = client.get(
-        "/auth/me", headers={"Authorization": f"Bearer {tokens['access_token']}"}
-    )
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {tokens['access_token']}"})
 
     assert response.status_code == 200
     assert response.json()["email"] == "dev5@example.com"

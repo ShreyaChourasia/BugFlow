@@ -1,6 +1,7 @@
 import random
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,8 +15,14 @@ from app.models.commit import Commit
 from app.models.developer import Developer
 from app.models.enums import Role
 from app.models.ml import MLModel
-from app.models.repository import Repository
+from app.models.pull_request import LineRisk, PullRequest, RiskPrediction
+from app.models.repository import MiningRun, Repository
 from app.models.user import User
+
+from .gitutil import commit_all, init_repo
+
+RISKY_LINE = "except: pass\n"
+SAFE_LINE = "return result\n"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -73,9 +80,7 @@ def make_user(db_session: Session, email: str, role: Role, password: str = "test
     return user
 
 
-def make_commits_for_training(
-    db_session: Session, n: int = 150, seed: int = 0
-) -> list[Commit]:
+def make_commits_for_training(db_session: Session, n: int = 150, seed: int = 0) -> list[Commit]:
     """Enough synthetic, chronologically-ordered, feature-labelled commits to
     exercise the training pipeline's chronological split meaningfully — used
     instead of real mining so training tests are fast and deterministic."""
@@ -125,6 +130,61 @@ def make_commits_for_training(
     for commit in commits:
         db_session.refresh(commit)
     return commits
+
+
+@pytest.fixture
+def line_risk_repo(tmp_path: Path) -> tuple[Path, list[str]]:
+    """20 commits, each appending 4 lines — every 3rd commit is all risky
+    lines, giving >= MIN_TRAINING_LINES (50) weakly-labelled examples."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    path = repo / "a.py"
+    path.write_text("")
+
+    shas = []
+    for i in range(20):
+        line = RISKY_LINE if i % 3 == 0 else SAFE_LINE
+        with path.open("a") as f:
+            f.writelines([line] * 4)
+        shas.append(commit_all(repo, f"commit {i}"))
+    return repo, shas
+
+
+@pytest.fixture
+def repository_with_commits(
+    db_session: Session, line_risk_repo: tuple[Path, list[str]]
+) -> Repository:
+    # Line-risk training is global across every mined repo (same as
+    # commit_risk), and re-clones each one to recover added-line text — any
+    # repo left in this shared dev Postgres from a manual demo (`make seed`,
+    # README's "six" walkthrough) would get network-cloned into this test.
+    # Scope the test's world to just its own fixture repo (rolled back with
+    # everything else at the end of this test's transaction).
+    db_session.execute(delete(LineRisk))
+    db_session.execute(delete(RiskPrediction))
+    db_session.execute(delete(PullRequest))
+    db_session.execute(delete(Commit))
+    db_session.execute(delete(MiningRun))
+    db_session.execute(delete(Repository))
+
+    repo_path, shas = line_risk_repo
+    repository = Repository(name="line-risk-demo", url=str(repo_path))
+    db_session.add(repository)
+    db_session.commit()
+
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    for i, sha in enumerate(shas):
+        db_session.add(
+            Commit(
+                sha=sha,
+                repository_id=repository.id,
+                message=f"commit {i}",
+                timestamp=base + timedelta(minutes=i),
+                is_bug_inducing=(i % 3 == 0),
+            )
+        )
+    db_session.commit()
+    return repository
 
 
 @pytest.fixture

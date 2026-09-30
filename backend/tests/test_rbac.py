@@ -45,9 +45,7 @@ def test_non_admin_cannot_edit_system_config(client: TestClient, db_session: Ses
     make_user(db_session, "qa@example.com", Role.QA, password="s3cret")
     headers = _login(client, "qa@example.com", "s3cret")
 
-    response = client.put(
-        "/admin/config/some_setting", json={"value": "true"}, headers=headers
-    )
+    response = client.put("/admin/config/some_setting", json={"value": "true"}, headers=headers)
 
     assert response.status_code == 403
 
@@ -57,9 +55,7 @@ def test_admin_can_edit_system_config(client: TestClient, db_session: Session) -
     make_user(db_session, "admin2@example.com", Role.ADMIN, password="s3cret")
     headers = _login(client, "admin2@example.com", "s3cret")
 
-    response = client.put(
-        "/admin/config/some_setting", json={"value": "true"}, headers=headers
-    )
+    response = client.put("/admin/config/some_setting", json={"value": "true"}, headers=headers)
 
     assert response.status_code == 200
     assert response.json() == {"key": "some_setting", "value": "true"}

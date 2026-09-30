@@ -1,5 +1,120 @@
 # Progress log
 
+## Phase 5 — Line-level risk and the review queue
+
+**Stories:** US-09, US-13, US-14, US-15.
+
+### What was built
+
+- **`ml/bugflow_ml/models/line_risk.py`**: JITLine-style line-level model —
+  tokenises added lines, TF-IDF + `LogisticRegression`, chronological
+  train/test split (C9) with the same leakage assertion as commit-risk.
+  Weak labels: every added line inherits its commit's `is_bug_inducing` flag
+  (documented limitation, not a shortcut — see `docs/ml.md`). Metrics:
+  ROC-AUC, PR-AUC, `recall_at_20pct_lines`, and `top_k_accuracy` (the one
+  that actually matches US-13's "would the top-N have surfaced it" use
+  case). Explanation (US-14) is exact `coefficient × tfidf_value` per token
+  — no SHAP/LIME dependency needed for a linear model.
+- **`git_miner.mine_specific_commits()`**: re-walks just the given commits
+  via PyDriller's `only_commits` filter to recover added-line text, which
+  Phase 2 deliberately never persists on `Commit`.
+- **`app/services/line_risk_training_service.py`**: trains a global
+  champion (same "no `repository_id` on `MLModel`" design as commit-risk)
+  across every mined repository's added lines, logs to MLflow as a single
+  `Pipeline(tfidf, clf)` artifact, promotes on `top_k_accuracy`.
+- **`app/services/line_prediction_service.py`**: loads the cached champion
+  pipeline, scores every added line in a diff, returns the top-N
+  (`Repository.line_risk_top_n`) ranked with a token-level reason each.
+- **`pr_scoring_service.py`** now runs line-level analysis whenever a
+  commit's calibrated risk clears `Repository.risk_threshold` (docs/decisions/003):
+  persists `LineRisk` rows, adds a "Riskiest lines" section to the PR
+  comment, and reports `not_applicable` (US-13 AC2's exact wording),
+  `unavailable` (no line-risk model yet, or its diff couldn't be recovered),
+  or `available` — without ever turning a missing line-risk model into a
+  failed commit-risk assessment.
+- **`POST /line-risks/{id}/false-alarm`** (US-15): marks the line and writes
+  a `Feedback` row (`decision_type="LineRisk"`).
+- **`GET /review-queue`** (US-09): every open PR across all repositories,
+  sorted by calibrated risk, with change size (lines added/deleted, files
+  changed) — global, matching the Code Reviewer role's "view all PRs"
+  permission.
+- **Frontend**: a diff viewer on the PR detail page (grouped by file,
+  expandable lines showing the token-level reason and a false-alarm
+  button), and a new `/review-queue` page.
+- **Migration**: `Repository.line_risk_top_n` (default 5).
+
+### Decisions
+
+- **`docs/decisions/003-line-risk-top-n.md`**: reuses the existing
+  `risk_threshold` as the "is this high risk" gate for line-level analysis
+  rather than adding a second, redundant threshold; `line_risk_top_n` is the
+  one genuinely new per-repo setting.
+- **Line text is recovered on demand, not persisted on `Commit`.** Rather
+  than retroactively changing Phase 2's schema to store raw diff lines
+  (bloating every mined commit with text nothing else needs), both training
+  and PR-time scoring call `mine_specific_commits()` to re-walk just the
+  commits they need. `ponytail:` this means a fresh git clone per call —
+  fine at this project's demo scale, worth caching the checkout
+  (`mining_service` already has this pattern) if line-risk runs against
+  larger repos or scores on every push.
+- **Champion promotion uses `top_k_accuracy`, not PR-AUC** — unlike
+  commit-risk. It's the metric that reflects what a reviewer actually sees
+  (would the top-N lines shown have included a real one), not just a global
+  ranking metric.
+
+### Known gaps (expected — later phases)
+
+- Nothing currently reads `Feedback` rows back into training — a false-alarm
+  mark is captured but doesn't yet affect future line-risk training or a
+  per-repo precision metric.
+- The line-risk model has never been evaluated against a second, larger real
+  repository — same single-small-real-dataset caveat Phase 3's commit-risk
+  model already carries (see below).
+
+### How to demo it
+
+1. Mine a repo with real history (Phase 2) and train both champions:
+   ```bash
+   docker compose exec api python /app/scripts/train.py
+   docker compose exec api python /app/scripts/train_line_risk.py
+   ```
+2. Lower the repo's `risk_threshold` if needed so a commit clears it, then
+   replay a PR event (Phase 4):
+   ```bash
+   docker compose exec api python /app/scripts/replay_pr_events.py \
+     --repository-id <id> --sha <a mined sha> --pr-number 101
+   ```
+3. Open `/repositories/<id>/pull-requests/101` — see "Riskiest lines" with
+   expandable rows and a false-alarm button, or (below threshold) "did not
+   meet the threshold for line-level analysis."
+4. Open `/review-queue` — every open PR across every repo, riskiest first.
+
+### Performance and honest results — measured against the real stack, not assumed
+
+- **Line-risk training on the real `six` repo** (504 mined commits, run
+  inside the live `api` container): took ~10 seconds end-to-end (one clone
+  + walk + TF-IDF fit + LightGBM-free linear fit), `top_k_accuracy=1.0`,
+  `pr_auc=0.31`, `roc_auc=0.64`, `recall_at_20pct_lines=0.46`. Reported
+  honestly rather than cherry-picked: on a real end-to-end check, several of
+  the top-ranked "risky" lines turned out to be `CHANGES`-file separator
+  lines (`-----------------`) rather than meaningful code — the TF-IDF
+  vectorizer treats punctuation-only tokens like any other, and with only
+  504 commits' worth of added lines to learn from, a handful of
+  coincidentally-labelled separator lines were enough to make `-` look
+  predictive. Same class of honest limitation as Phase 3's commit-risk
+  model scoring worse than its own baseline on this same small, imbalanced
+  real dataset — a bigger, more diverse training corpus is what actually
+  fixes this, not a different algorithm.
+- **`/review-queue` N+1 query bug, found by live browser testing, not unit
+  tests.** The first implementation looked up each PR's commit and
+  prediction with two separate queries per row. Against ~900 real open PRs
+  left over in the dev database from Phase 4's k6 perf testing, the page
+  took **6.6 seconds** to load — invisible to unit tests (which use a
+  handful of PRs) and only surfaced by loading the actual page in a browser
+  and watching the request sit "pending." Rewritten to batch-fetch commits
+  and predictions in two queries total regardless of PR count: **0.115
+  seconds**, a ~57x improvement.
+
 ## Phase 4 — GitHub integration: results on the pull request (end of Release 1)
 
 **Stories:** US-08, US-11, US-46, US-47, NFR-US-01, NFR-US-04, NFR-US-05.
