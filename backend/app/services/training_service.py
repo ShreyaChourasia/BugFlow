@@ -97,11 +97,17 @@ def train_and_register_champion(
         # skops (MLflow's default sklearn serialization) refuses to load
         # LightGBM's own types unless explicitly told they're trusted; these
         # models are only ever loaded by us, so plain pickle is simpler.
+        #
+        # artifact_path= (not MLflow 3.x's new name=) deliberately: name=
+        # logs it as a separate "Logged Model" entity at models:/<model_id>,
+        # not as a plain run artifact — prediction_service loads champions
+        # via runs:/<run_id>/<artifact_path>, which needs the classic path.
+        # artifact_path is deprecated but still fully functional.
         mlflow.sklearn.log_model(
-            result.raw_model, name="raw_model", serialization_format="pickle"
+            result.raw_model, artifact_path="raw_model", serialization_format="pickle"
         )
         mlflow.sklearn.log_model(
-            result.calibrated_model, name="calibrated_model", serialization_format="pickle"
+            result.calibrated_model, artifact_path="calibrated_model", serialization_format="pickle"
         )
 
         with tempfile.TemporaryDirectory() as tmp:

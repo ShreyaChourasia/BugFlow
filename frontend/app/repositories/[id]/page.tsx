@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -85,9 +86,14 @@ export default function RepositoryDetailPage() {
 
   return (
     <div className="max-w-2xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">{repo?.name}</h1>
-        <p className="text-sm text-muted-foreground">{repo?.url}</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">{repo?.name}</h1>
+          <p className="text-sm text-muted-foreground">{repo?.url}</p>
+        </div>
+        <Link href={`/repositories/${repositoryId}/pull-requests`} className="text-sm underline">
+          Pull requests
+        </Link>
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}

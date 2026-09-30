@@ -26,4 +26,4 @@ See master prompt §6. `backend/` = API + workers. `ml/` = installable `bugflow_
 used by both. `frontend/` = Next.js app. `scripts/` = seeding, replay, perf tests.
 
 ## Status
-Phase 3 complete (commit risk model, calibration, SHAP explanations, MLflow) — see `docs/PROGRESS.md` for what exists and how to demo it.
+Phase 4 complete (GitHub App integration, PR risk checks/comments, offline replay) — end of Release 1. See `docs/PROGRESS.md` for what exists and how to demo it.

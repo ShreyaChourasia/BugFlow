@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     github_app_id: str = ""
     github_app_private_key_path: str = ""
     github_webhook_secret: str = ""
+    github_api_base_url: str = "https://api.github.com"
 
 
 @lru_cache

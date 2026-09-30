@@ -1,6 +1,16 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -8,6 +18,9 @@ from app.core.db import Base
 
 class PullRequest(Base):
     __tablename__ = "pull_requests"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "number", name="uq_pull_requests_repository_number"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id"))
@@ -20,6 +33,14 @@ class PullRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     check_run_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     comment_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Phase 4: current write-back state, so the UI can show exactly what was
+    # (or would have been) posted to GitHub without re-deriving it — the
+    # "fake Checks sink" doubles as this in offline/replay mode. Not in the
+    # original §7 table — see docs/decisions/002-pr-check-state-columns.md.
+    check_status: Mapped[str] = mapped_column(String(20), default="pending")
+    check_conclusion: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    check_summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    comment_body: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class RiskPrediction(Base):

@@ -50,6 +50,13 @@ services:
       - .env
     ports:
       - "8000:8000"
+    volumes:
+      # MLflow logs each run's artifact_uri as a bare local path
+      # (/mlflow/artifacts/...), not a proxied mlflow-artifacts:/ URI —
+      # mlflow.sklearn.load_model() then reads it directly off disk, so the
+      # api/worker containers need the same path the mlflow container writes
+      # to, not just network access to its HTTP API.
+      - mlflow_data:/mlflow
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,6 +78,8 @@ services:
     command: ["python", "-m", "app.workers.run"]
     env_file:
       - .env
+    volumes:
+      - mlflow_data:/mlflow
     depends_on:
       postgres:
         condition: service_healthy

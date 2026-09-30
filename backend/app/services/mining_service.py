@@ -8,31 +8,16 @@ from bugflow_ml.labeling.szz import find_bug_inducing_shas
 from bugflow_ml.mining.backoff import retry_with_backoff
 from bugflow_ml.mining.git_miner import MinedCommit, mine_commits
 from bugflow_ml.mining.issue_links import extract_issue_refs, is_fix_commit
-from sqlalchemy import any_, func, select, update
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.models.commit import Commit
 from app.models.developer import Developer
 from app.models.repository import MiningRun, Repository
+from app.services.developer_service import get_or_create_developer, seed_author_commit_counts
 
 logger = get_logger(__name__)
-
-
-def _get_or_create_developer(
-    db: Session, cache: dict[str, Developer], name: str, email: str, seen_at: datetime
-) -> Developer:
-    if email in cache:
-        return cache[email]
-
-    developer = db.scalar(select(Developer).where(any_(Developer.git_emails) == email))
-    if developer is None:
-        developer = Developer(name=name, git_emails=[email], joined_at=seen_at)
-        db.add(developer)
-        db.flush()
-
-    cache[email] = developer
-    return developer
 
 
 def _resolve_local_repo_path(url: str) -> tuple[str, tempfile.TemporaryDirectory | None]:
@@ -48,15 +33,6 @@ def _resolve_local_repo_path(url: str) -> tuple[str, tempfile.TemporaryDirectory
     tmp_dir = tempfile.TemporaryDirectory(prefix="bugflow_mine_")
     subprocess.run(["git", "clone", "--quiet", url, tmp_dir.name], check=True)
     return tmp_dir.name, tmp_dir
-
-
-def _seed_author_commit_counts(db: Session, repository_id: int) -> dict[int, int]:
-    rows = db.execute(
-        select(Commit.author_id, func.count())
-        .where(Commit.repository_id == repository_id, Commit.author_id.is_not(None))
-        .group_by(Commit.author_id)
-    ).all()
-    return {author_id: count for author_id, count in rows if author_id is not None}
 
 
 def run_mining(db: Session, mining_run_id: int) -> None:
@@ -82,7 +58,7 @@ def run_mining(db: Session, mining_run_id: int) -> None:
     processed: int = checkpoint.get("processed", 0)
 
     developer_cache: dict[str, Developer] = {}
-    author_commit_counts = _seed_author_commit_counts(db, repository.id)
+    author_commit_counts = seed_author_commit_counts(db, repository.id)
     fix_shas: list[str] = []
     tmp_dir = None
 
@@ -109,7 +85,7 @@ def run_mining(db: Session, mining_run_id: int) -> None:
                 db.commit()
                 continue
 
-            developer = _get_or_create_developer(
+            developer = get_or_create_developer(
                 db, developer_cache, mined.author_name, mined.author_email, mined.timestamp
             )
             prior_commits = author_commit_counts.get(developer.id, 0)
