@@ -26,4 +26,9 @@ See master prompt §6. `backend/` = API + workers. `ml/` = installable `bugflow_
 used by both. `frontend/` = Next.js app. `scripts/` = seeding, replay, perf tests.
 
 ## Status
-Phase 5 complete (line-level risk model, PR line highlights, review queue, false-alarm feedback). Phase 4 (GitHub App integration, PR risk checks/comments, offline replay) is end of Release 1. See `docs/PROGRESS.md` for what exists and how to demo it.
+Phase 6 complete (defect report CRUD, pgvector/HNSW duplicate detection, live suggestions, merge + async notify, triage queue). Phase 5 (line-level risk, review queue) and Phase 4 (GitHub App integration, end of Release 1) precede it. See `docs/PROGRESS.md` for what exists and how to demo it.
+
+## Gotchas worth knowing before touching process entrypoints
+- **LightGBM + PyTorch (via sentence-transformers) segfault if torch loads first** in the same process (both bundle their own OpenMP runtime). `app/core/native_libs.py` imports LightGBM first and must stay imported at the top of `app.main`, `app.workers.run`, and `tests/conftest.py`. See `docs/ml.md`'s duplicate-detection section.
+- **`pip install torch` on Linux defaults to the CUDA build** (multi-GB) even in a CPU-only container. `backend/Dockerfile` passes `--extra-index-url https://download.pytorch.org/whl/cpu` to avoid it — don't drop that flag when touching the Dockerfile.
+- **Unbounded list endpoints will actually get hit at scale in this project** — `scripts/load_test_defects.py` exists specifically to bulk-load real data volume, and it found `GET /defect-reports` returning every row (no pagination) as a real bug, not a hypothetical one. Any new "list everything" endpoint should default to a `limit`.

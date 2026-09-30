@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
+from app.api.defect_reports import router as defect_reports_router
 from app.api.health import router as health_router
 from app.api.mining import router as mining_router
 from app.api.pull_requests import line_risk_router
@@ -14,6 +15,7 @@ from app.api.repositories import router as repositories_router
 from app.api.risk import router as risk_router
 from app.api.users import router as users_router
 from app.api.webhooks import router as webhooks_router
+from app.core import native_libs  # noqa: F401 -- must load before any request imports torch
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 
@@ -47,3 +49,4 @@ app.include_router(line_risk_router)
 app.include_router(risk_router)
 app.include_router(webhooks_router)
 app.include_router(admin_router)
+app.include_router(defect_reports_router)

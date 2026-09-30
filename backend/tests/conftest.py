@@ -1,3 +1,5 @@
+from app.core import native_libs  # noqa: F401, I001 -- must load before any test imports torch
+
 import random
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta

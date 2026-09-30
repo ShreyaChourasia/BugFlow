@@ -207,6 +207,45 @@ rather than silently show nothing.
 into training; it's captured for a future phase to use as a training signal
 or a per-repo precision metric.
 
+## Duplicate detection (`bugflow_ml.embeddings.duplicate_detection`)
+
+§8's row for this task: "sentence-transformer embeddings in pgvector (HNSW
+index), cosine similarity" → top-5 similar reports with scores, shared key
+phrases highlighted. Implemented as:
+
+- **Embedding**: `all-MiniLM-L6-v2` (384-dim, the dimension `DefectReport.embedding`
+  was already sized for back in Phase 1) via `sentence-transformers`, loaded
+  once per process and reused (loading it is the slow part — a few seconds —
+  encoding itself is fast). `embed_texts()` batch-encodes, which is what
+  makes the 300k-report load test (below) finish in minutes rather than
+  hours: batching a single call over many texts is dramatically faster than
+  the equivalent number of one-at-a-time calls.
+- **Search**: a plain SQL `ORDER BY embedding <=> :query LIMIT 5` via
+  pgvector's SQLAlchemy `cosine_distance()` comparator, against an HNSW
+  index built with `vector_cosine_ops` (the default op class is L2 — using
+  it would build an index the query planner can't use for a cosine-distance
+  `ORDER BY`). `score = 1 - cosine_distance` is exactly the cosine
+  similarity, since pgvector defines the distance that way regardless of
+  whether the vectors are unit-normalized.
+- **Shared phrases (US-18)**: `difflib.SequenceMatcher.get_matching_blocks()`
+  over word-tokenized text — a stdlib-only way to find actual contiguous
+  multi-word phrases common to two reports ("null pointer exception", not
+  just the words "null", "pointer", "exception" separately), not a
+  bag-of-words overlap. No NLP dependency needed for this.
+
+**A real, environment-level gotcha found while wiring this in, not by unit
+tests alone**: importing `sentence-transformers` (which pulls in PyTorch)
+and `lightgbm` in the same process segfaults on this machine — both bundle
+their own copy of the OpenMP runtime, and whichever loads second crashes.
+Reproduced directly (`import sentence_transformers; ...; import lightgbm`
+→ `SIGSEGV`; the reverse order doesn't crash). Since a single long-lived API
+or RQ worker process (Phase 4's `SimpleWorker`) legitimately handles both
+commit-risk and defect-duplicate requests, this isn't just a test-ordering
+fluke — it's a real production crash risk. Fixed by `app/core/native_libs.py`,
+imported first thing in every process entrypoint (`app.main`,
+`app.workers.run`, `tests/conftest.py`), which imports LightGBM before
+anything else gets a chance to import torch.
+
 ## Experiment tracking (MLflow)
 
 Every `train_and_register_champion()` call logs a **complete experiment

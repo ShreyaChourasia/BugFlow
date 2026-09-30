@@ -3,6 +3,7 @@ jobs (later phases)."""
 
 from rq import SimpleWorker
 
+from app.core import native_libs  # noqa: F401 -- must load before any job imports torch
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.queue import get_queue

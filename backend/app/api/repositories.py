@@ -14,11 +14,16 @@ router = APIRouter(prefix="/repositories", tags=["repositories"])
 
 # US-01: Admin registers/configures repositories; ML Engineer can view them too.
 VIEW_ROLES = (Role.ADMIN, Role.ML_ENGINEER)
+# Phase 6: filing a defect report means picking which repository it's
+# against, so the list (name/id only, via RepositoryRead) is also readable by
+# whoever can file or triage a report — not the mutating or single-repo
+# endpoints below, which stay Admin/ML-Engineer-only.
+LIST_ROLES = (*VIEW_ROLES, Role.REPORTER, Role.TRIAGER)
 
 
 @router.get("", response_model=list[RepositoryRead])
 def list_repositories(
-    db: Session = Depends(get_db), _: User = Depends(require_role(*VIEW_ROLES))
+    db: Session = Depends(get_db), _: User = Depends(require_role(*LIST_ROLES))
 ) -> list[Repository]:
     return list(db.scalars(select(Repository)))
 

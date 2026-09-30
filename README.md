@@ -23,7 +23,7 @@ the phase-by-phase build plan this project follows — lives in
 ## Status
 
 Built phase by phase, each one fully working and demoable before the next
-starts. **Release 1 is complete** (Phases 0–4), and Phase 5 is done — see
+starts. **Release 1 is complete** (Phases 0–4), and Phases 5–6 are done — see
 [`docs/PROGRESS.md`](./docs/PROGRESS.md) for exactly what was built, what
 decisions were made and why, and how to demo each phase.
 
@@ -35,16 +35,17 @@ decisions were made and why, and how to demo each phase.
 | 3 | Commit risk model (LightGBM + calibration), SHAP explanations, MLflow | ✅ Done |
 | 4 | GitHub App integration — risk posted on the actual PR (end of Release 1) | ✅ Done |
 | 5 | Line-level risk, review queue, false-alarm feedback | ✅ Done |
-| 6–10 | Triage/duplicates, resolver assignment, forecasting, analytics, model lifecycle | ⏳ Not started |
+| 6 | Defect reports, duplicate detection (pgvector/HNSW), triage queue | ✅ Done |
+| 7–10 | Resolver assignment, forecasting, analytics, model lifecycle | ⏳ Not started |
 
 ## Tech stack
 
 | Layer | Choice |
 |---|---|
 | Backend API | Python 3.11, FastAPI, Pydantic v2, SQLAlchemy 2.x + Alembic |
-| Database | PostgreSQL 16 + pgvector |
+| Database | PostgreSQL 16 + pgvector (HNSW) |
 | Background jobs | Redis + RQ |
-| ML | scikit-learn, LightGBM, SHAP, MLflow, PyDriller (repo mining) |
+| ML | scikit-learn, LightGBM, SHAP, MLflow, PyDriller (repo mining), sentence-transformers |
 | Frontend | Next.js (App Router) + TypeScript, Tailwind CSS |
 | Auth | JWT (access + refresh), bcrypt, role-based access control |
 | Testing | pytest, Vitest |
@@ -132,15 +133,36 @@ expandable rows (token-level reason, a false-alarm button), or, below
 threshold, "did not meet the threshold for line-level analysis." `/review-queue`
 lists every open PR across every repository, riskiest first.
 
+### Reporting a bug and catching duplicates
+
+Log in as `reporter@bugflow.demo` and open `/defect-reports/new` — as you
+type, a debounced panel suggests similar existing reports (US-16). Submitting
+opens the report's detail page with ranked candidate duplicates and their
+shared phrases highlighted. Log in as `triager@bugflow.demo` to see
+`/triage-queue` and merge a duplicate into its original from a report's
+detail page.
+
+To see the duplicate-detection search hold up at scale:
+
+```bash
+docker compose exec api python /app/scripts/load_test_defects.py --count 300000
+```
+
+Bulk-loads 300k synthetic (not real — see
+[`docs/decisions/004-synthetic-load-test-data.md`](./docs/decisions/004-synthetic-load-test-data.md))
+defect reports and reports p50/p95/p99 search latency against the live
+pgvector HNSW index (see `docs/PROGRESS.md` for the actual numbers measured).
+
 ## Repository structure
 
 ```
 backend/    FastAPI app + RQ workers (installable Python package)
-ml/         bugflow_ml — mining, labelling, features, models, explanations
-            (installable, used by both the API and the workers)
+ml/         bugflow_ml — mining, labelling, features, models, explanations,
+            embeddings (installable, used by both the API and the workers)
 frontend/   Next.js app
 scripts/    seed_demo.py, train.py, train_line_risk.py, reproduce_run.py,
-            export_experiment.py, replay_pr_events.py, perf/ (k6 scripts)
+            export_experiment.py, replay_pr_events.py, load_test_defects.py,
+            perf/ (k6 scripts)
 docs/       PROGRESS.md, architecture.md, ml.md, github-app.md, decisions/ (ADRs)
 ```
 
@@ -177,6 +199,11 @@ Full interactive docs at `/docs` once the API is running. Implemented so far:
 | `GET /repositories/{id}/pull-requests`, `.../{number}` | PR list/detail: check status, risk, comment, line-level highlights |
 | `POST /line-risks/{id}/false-alarm` | Mark a highlighted line as a false alarm |
 | `GET /review-queue` | Every open PR across all repos, sorted by calibrated risk |
+| `GET/POST /defect-reports`, `GET /defect-reports/{id}` | Defect report CRUD (Reporter creates) |
+| `GET /defect-reports/suggestions?text=` | Live duplicate suggestions while typing (US-16) |
+| `GET /defect-reports/{id}/duplicates` | Candidate duplicates with shared phrases (US-17/18) |
+| `POST /defect-reports/{id}/merge` | Merge into an original, notify async (Triager, US-20) |
+| `POST /defect-reports/index/rebuild` | Rebuild the HNSW index (Admin/ML Engineer) |
 | `GET/PUT /admin/config`, `GET /admin/audit-log` | System settings (Admin) |
 | `GET/POST/PATCH /users` | User management (Admin) |
 
