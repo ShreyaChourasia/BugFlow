@@ -30,6 +30,8 @@ export function Nav() {
     <nav className="flex items-center gap-4 text-sm">
       <Link href="/">Home</Link>
       <Link href="/review-queue">Review queue</Link>
+      {user.role === "reporter" && <Link href="/defect-reports/new">Report a bug</Link>}
+      {user.role === "triager" && <Link href="/triage-queue">Triage queue</Link>}
       {REPOSITORY_ROLES.has(user.role) && <Link href="/repositories">Repositories</Link>}
       {user.role === "admin" && <Link href="/admin/users">Admin · Users</Link>}
       <span className="text-muted-foreground">

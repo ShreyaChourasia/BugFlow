@@ -6,7 +6,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git libgom
     && rm -rf /var/lib/apt/lists/*
 
 COPY ml/ ./ml/
-RUN pip install --no-cache-dir -e ./ml
+# --extra-index-url: sentence-transformers pulls in torch, whose default PyPI
+# wheel on Linux is the CUDA build (pulls several GB of nvidia-* packages
+# this CPU-only container never uses). The CPU wheel index gives pip a
+# CPU-only torch to prefer instead — same package, without the CUDA payload.
+RUN pip install --no-cache-dir -e ./ml --extra-index-url https://download.pytorch.org/whl/cpu
 
 COPY backend/pyproject.toml ./backend/pyproject.toml
 COPY backend/app ./backend/app

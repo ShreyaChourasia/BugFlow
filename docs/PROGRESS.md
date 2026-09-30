@@ -1,5 +1,136 @@
 # Progress log
 
+## Phase 6 — Defect reports and duplicate detection
+
+**Stories:** US-16, US-17, US-18, US-19, US-20, NFR-US-02.
+
+### What was built
+
+- **`ml/bugflow_ml/embeddings/duplicate_detection.py`**: `all-MiniLM-L6-v2`
+  sentence embeddings (384-dim, matching the dimension `DefectReport.embedding`
+  was already sized for back in Phase 1), batch-encoded via `embed_texts()`.
+  `shared_phrases()` finds actual contiguous multi-word phrases common to two
+  reports via `difflib.SequenceMatcher` on word-tokenized text — stdlib only,
+  no NLP dependency.
+- **HNSW index** (`ix_defect_reports_embedding_hnsw`, `vector_cosine_ops`) via
+  a hand-written migration — pgvector's default op class is L2, which the
+  cosine-distance queries here can't use.
+- **`app/services/defect_service.py`**: create-and-embed a report; search
+  candidates via `ORDER BY embedding <=> :query LIMIT k`; live suggestions
+  (US-16, gated on a minimum word count); duplicates-with-shared-phrases for
+  an existing report (US-17/18); merge + async notify (US-20); index-rebuild
+  status tracked in `SystemConfig` (C2 — `"rebuilding"` is a distinct,
+  explicit state from an empty result list, never silently confused).
+- **`POST /defect-reports/index/rebuild`**: `REINDEX INDEX CONCURRENTLY` in a
+  background job, for after a bulk load.
+- **US-20 "notify asynchronously"**: no email/SMTP integration exists
+  anywhere in this project, so notification is an `AuditLog` entry
+  (`duplicate_merge_notification`) written by an RQ job — same
+  "offline-by-default, a real channel is a config choice" pattern Phase 4
+  used for GitHub. What the story actually requires — this runs in the
+  background, not inline in the merge request — is real either way.
+- **Frontend**: `/defect-reports/new` (debounced live suggestions in a side
+  panel that never touches the form's own text state, so opening a
+  suggestion in a new tab can't lose what's typed), a report detail page
+  with ranked candidates and `<mark>`-highlighted shared phrases, a merge
+  button for triagers, and `/triage-queue`.
+- **`scripts/load_test_defects.py`** (C2/US-19): bulk-loads synthetic defect
+  reports and measures p50/p95/p99 search latency against the live index —
+  see the real numbers below.
+
+### Decisions
+
+- **`docs/decisions/004-synthetic-load-test-data.md`**: the ≥300k-report load
+  test uses generated synthetic text, not a real public dataset — there's no
+  verified, licensed 300k+ real bug-report corpus available here, and what
+  C2/US-19 actually tests (does pgvector/HNSW search latency hold up at
+  scale) doesn't depend on the text being real.
+- **`GET /repositories` list is now also readable by Reporter/Triager**, not
+  just Admin/ML-Engineer — filing a report means picking which repository
+  it's against. Only the list endpoint; single-repo GET and all mutations
+  stay Admin/ML-Engineer-only.
+
+### Known gaps (expected — later phases)
+
+- Nothing reads `Feedback`/merge history back into anything yet — same gap
+  as Phase 5's line-risk false-alarm feedback.
+- Severity/priority classification is Phase 7.
+
+### How to demo it
+
+1. Log in as `reporter@bugflow.demo`, open `/defect-reports/new`, pick a
+   repository, and start typing a description — similar existing reports
+   appear in the side panel after a short pause.
+2. Submit — the report's detail page shows ranked candidate duplicates with
+   shared phrases highlighted.
+3. Log in as `triager@bugflow.demo`, open `/triage-queue`, open a report,
+   and merge it into a candidate.
+4. `docker compose exec api python /app/scripts/load_test_defects.py --count 300000`
+   to see the search stay fast at real scale (numbers below).
+
+### Real findings from testing against the live stack, not assumed
+
+- **LightGBM + PyTorch segfault if torch loads first in the same process.**
+  Both bundle their own OpenMP runtime. Reproduced directly:
+  `import sentence_transformers; ...; import lightgbm` → `SIGSEGV`; the
+  reverse order doesn't crash. First surfaced as the backend test suite
+  crashing partway through (alphabetical test collection loads the defect
+  tests, which import sentence-transformers, before the PR-scoring tests,
+  which train a LightGBM model) — not something any single test would ever
+  catch in isolation. A real production risk too: a single long-lived API or
+  RQ worker process legitimately handles both commit-risk and
+  defect-duplicate requests. Fixed by `app/core/native_libs.py`, imported
+  first in every process entrypoint (`app.main`, `app.workers.run`,
+  `tests/conftest.py`), which imports LightGBM before anything else gets a
+  chance to import torch. See `docs/ml.md`.
+- **`pip install torch` on Linux defaults to the CUDA build** even in a
+  CPU-only container, pulling several GB of `nvidia-*` packages the
+  container never uses and dramatically slowing the Docker build.
+  `backend/Dockerfile` now passes
+  `--extra-index-url https://download.pytorch.org/whl/cpu`.
+- **`GET /defect-reports` had no pagination at all.** Fine with a handful of
+  demo rows; against the ~36k rows the load test had inserted so far, it
+  returned a 16.6MB response in 11.3s. Fixed with `status`/`limit`/`offset`
+  query params (default `limit=100`, capped at 500) — found by loading the
+  actual `/triage-queue` page in a browser mid-load-test and watching it
+  never resolve, not by a unit test.
+- **A stale Docker image cost real debugging time.** After fixing the
+  pagination bug above, the *already-running* API container kept crashing on
+  the same request — the fix had been edited on disk but never rebuilt into
+  the image. Confirmed by `docker compose exec api grep` showing the old
+  function signature still running. Lesson written down here so it isn't
+  repeated: after any backend/ml code change meant to fix a *running*
+  container's behavior, rebuild and redeploy before re-testing, not just
+  re-test.
+- **A full-table `DELETE` against a large table with an HNSW index attached
+  is very slow** — a test's cleanup `DELETE FROM defect_reports` against the
+  300k-row post-load-test table took over 10 minutes (each deleted row
+  updates the HNSW graph) and had to be cancelled. Switched that cleanup to
+  `TRUNCATE ... CASCADE`, which resets the table instantly regardless of row
+  count and is still transactional/rollback-safe in Postgres.
+
+### Performance — measured against the real stack, not assumed (C2/US-19)
+
+`scripts/load_test_defects.py --count 300000` against the live pgvector
+HNSW index (single Docker Desktop VM, no dedicated benchmarking hardware):
+
+| Metric | Value |
+|---|---|
+| Reports loaded | 300,000 (synthetic — see ADR 004) |
+| Load time | 1389.8s (~23.2 min), ~216 rows/sec sustained |
+| Search p50 | 1.18ms |
+| Search p95 | **1.57ms** |
+| Search p99 | 2.49ms |
+
+500 search queries, each a real `ORDER BY embedding <=> :query LIMIT 5`
+against the full 300k-row HNSW index. The index does exactly what it's for:
+sub-2ms p95 lookup latency regardless of table size, which a sequential
+brute-force cosine-distance scan over 300k rows could not deliver. Load
+throughput (not the story's concern, but honestly reported) holds roughly
+steady across the whole run rather than degrading, suggesting HNSW insert
+cost on this table doesn't blow up as the graph grows, at least up to 300k
+nodes on this hardware.
+
 ## Phase 5 — Line-level risk and the review queue
 
 **Stories:** US-09, US-13, US-14, US-15.
