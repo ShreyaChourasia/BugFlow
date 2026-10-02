@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import app.api.defect_reports as defect_reports_module
@@ -33,6 +34,10 @@ def fake_queue(monkeypatch: pytest.MonkeyPatch) -> _FakeQueue:
 
 @pytest.fixture
 def repo(db_session: Session) -> Repository:
+    # This shared dev Postgres accumulates real rows from manual/live
+    # verification — clear defect-domain state so assertions here reflect
+    # only what this test creates.
+    db_session.execute(text("TRUNCATE defect_reports CASCADE"))
     repository = Repository(name="demo", url="/tmp/x")
     db_session.add(repository)
     db_session.commit()
@@ -85,17 +90,12 @@ def test_create_and_fetch_defect_report(
 def test_list_defect_reports_filters_by_status_and_respects_limit(
     client: TestClient, db_session: Session, repo: Repository
 ) -> None:
-    # This shared dev Postgres may have hundreds of thousands of rows left
-    # over from scripts/load_test_defects.py — clear them so "the two reports
-    # this test creates are what comes back" is actually a valid assertion.
-    # TRUNCATE, not DELETE: a row-by-row DELETE against a table this size
-    # with an HNSW index attached was measured taking 10+ minutes (each
-    # deleted row updates the index); TRUNCATE resets the table instantly
-    # regardless of row count, and is still transactional/rollback-safe in
-    # Postgres, unlike in some other databases.
-    from sqlalchemy import text
-
-    db_session.execute(text("TRUNCATE defect_reports CASCADE"))
+    # The `repo` fixture above already truncates defect_reports (TRUNCATE,
+    # not DELETE: a row-by-row DELETE against a table this size with an HNSW
+    # index attached was measured taking 10+ minutes — each deleted row
+    # updates the index). This test additionally needs hundreds of thousands
+    # of rows gone if scripts/load_test_defects.py has run against this same
+    # dev Postgres — the fixture's truncate already covers that case too.
 
     make_user(db_session, "reporter7@example.com", Role.REPORTER, password="s3cret")
     reporter_headers = _login(client, "reporter7@example.com", "s3cret")

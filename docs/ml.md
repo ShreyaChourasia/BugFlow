@@ -207,6 +207,49 @@ rather than silently show nothing.
 into training; it's captured for a future phase to use as a training signal
 or a per-repo precision metric.
 
+## Severity & priority classification (`bugflow_ml.models.triage_classifier`)
+
+§8's row for this task: "TF-IDF + linear model as baseline... Labels from a
+standard taxonomy... Abstains when text is too short" → severity, priority,
+confidence, with top words/features as the explanation, scored by macro-F1
+and a confusion matrix.
+
+- **Taxonomy (US-22)**: `bugflow_ml.taxonomy.Severity`/`Priority` — the one
+  place these label sets are defined. Both the classifier and the backend's
+  Pydantic schemas (`TriageDecisionRequest`) import from here rather than
+  each keeping their own copy.
+- **Two independent linear models, one shared tokenizer design**: severity
+  and priority are trained and champion-tracked completely separately
+  (`triage_severity`/`triage_priority` as two `MLModel` tasks) since one
+  could regress while the other improves — but `_train_one_target()` is one
+  generic TF-IDF-+-`LogisticRegression` trainer parameterized by which label
+  to read off each example, called once per target, rather than duplicating
+  the training loop twice.
+- **Abstention (US-21 AC2)**: `should_abstain()` is a plain word-count check,
+  applied *before* any model is even loaded — a report with too little text
+  gets "please add more detail," never a low-confidence guess dressed up as
+  a real suggestion.
+- **Explanation (top words/features, §8)**: the same exact
+  `coefficient × tfidf_value` attribution line_risk.py and duplicate
+  detection's shared-phrase logic already established, just indexed into the
+  *predicted class's own row* of a multi-class linear model's coefficients
+  (`model.coef_[class_idx]`) instead of a binary model's single row.
+- **Cold-start bootstrap data** (`generate_bootstrap_examples()`,
+  `docs/decisions/005`): `DefectReport.severity`/`priority` are null until a
+  human sets them — the same "no verified public dataset available" gap
+  Phase 6 hit (§8 suggests Bugzilla/Eclipse/Mozilla data), compounded by this
+  feature being *how* those labels get created in the first place. Training
+  always prefers real human-decided labels; the keyword-correlated synthetic
+  set only fills in below `MIN_TRAINING_EXAMPLES` (25), and stops being used
+  automatically once enough real decisions accumulate.
+- **Every suggestion gets a plain-language `Explanation` row (C3)** — `factors`
+  stores both targets' confidences and top words, `text` is one sentence
+  covering both, exactly like commit-risk's SHAP explanations. A `TriageAssessment`
+  is only persisted (and only has one shot at being computed) the first time
+  a given report's suggestion is viewed — a later request for the same report
+  reads back that same row rather than re-predicting, matching how a
+  cosine-distance search result wouldn't change between page loads either.
+
 ## Duplicate detection (`bugflow_ml.embeddings.duplicate_detection`)
 
 §8's row for this task: "sentence-transformer embeddings in pgvector (HNSW

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, event
+from sqlalchemy import delete, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.db import Base, engine, get_db
@@ -17,8 +17,7 @@ from app.models.commit import Commit
 from app.models.developer import Developer
 from app.models.enums import Role
 from app.models.ml import MLModel
-from app.models.pull_request import LineRisk, PullRequest, RiskPrediction
-from app.models.repository import MiningRun, Repository
+from app.models.repository import Repository
 from app.models.user import User
 
 from .gitutil import commit_all, init_repo
@@ -162,12 +161,17 @@ def repository_with_commits(
     # README's "six" walkthrough) would get network-cloned into this test.
     # Scope the test's world to just its own fixture repo (rolled back with
     # everything else at the end of this test's transaction).
-    db_session.execute(delete(LineRisk))
-    db_session.execute(delete(RiskPrediction))
-    db_session.execute(delete(PullRequest))
-    db_session.execute(delete(Commit))
-    db_session.execute(delete(MiningRun))
-    db_session.execute(delete(Repository))
+    # TRUNCATE ... CASCADE, not per-table delete(): a plain `DELETE FROM
+    # repositories` started failing on its own FK constraint the moment
+    # Phase 6 added defect_reports.repository_id — CASCADE doesn't need
+    # updating every time a later phase adds a new table that references
+    # one of these.
+    db_session.execute(
+        text(
+            "TRUNCATE line_risks, risk_predictions, pull_requests, commits, "
+            "mining_runs, repositories CASCADE"
+        )
+    )
 
     repo_path, shas = line_risk_repo
     repository = Repository(name="line-risk-demo", url=str(repo_path))

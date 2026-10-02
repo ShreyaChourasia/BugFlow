@@ -1,5 +1,118 @@
 # Progress log
 
+## Phase 7 — Severity and priority classification
+
+**Stories:** US-21, US-22, US-23.
+
+### What was built
+
+- **`bugflow_ml.taxonomy`** (US-22): `Severity` (blocker/critical/major/minor/trivial)
+  and `Priority` (P1–P5) — the one place these label sets are defined. The
+  backend's `TriageDecisionRequest` schema imports them directly, so an
+  invalid value is a 422 at the API boundary, not a silently-stored typo.
+- **`bugflow_ml.models.triage_classifier`** (US-21): TF-IDF + `LogisticRegression`
+  per target (severity, priority), each champion-tracked independently as
+  its own `MLModel` task. Abstains (US-21 AC2) on a plain word-count check
+  *before* any model loads — "add more detail," never a low-confidence guess.
+  Explanation is exact `coefficient × tfidf_value` attribution indexed into
+  the predicted class's own row of a multi-class linear model.
+- **Cold-start bootstrap data** (`docs/decisions/005`): training always
+  prefers real human-decided labels; a small keyword-correlated synthetic
+  set only fills in below 25 real examples, and stops being used
+  automatically once enough real decisions exist.
+- **`GET /defect-reports/{id}/triage-suggestion`**: `"decided"` once a human
+  has set severity/priority, otherwise the latest automated suggestion
+  (computed once and persisted, not recomputed on every page view),
+  `"abstained"`, or `"unavailable"` — never silently empty.
+- **`POST /defect-reports/{id}/triage`** (US-23, Triager-only): one-click
+  accept-as-is or change-then-save. Either way writes a `Feedback` row
+  (`accepted` = whether the final values matched the last suggestion) — that
+  row is what the misclassification report reads.
+- **`GET /defect-reports/misclassification-report`**: which suggested
+  severities/priorities get corrected most often, as a correction rate per
+  suggested value.
+- **C3**: every automated suggestion gets an `Explanation` row (confidences
+  and top words for both targets, one plain-language sentence) — the same
+  "no decision without an explanation" discipline every other model in this
+  project already follows.
+- **Frontend**: a "Triage" panel on the report detail page (marked
+  "Automated", Accept button, editable severity/priority + "Change & save"),
+  and bulk-accept checkboxes in the triage queue (fetches each undecided
+  report's suggestion in parallel — bounded by the same `limit=100` the list
+  itself already applies).
+
+### Decisions
+
+- **`docs/decisions/005-triage-bootstrap-data.md`**: same "no verified public
+  dataset available" gap Phase 6 hit (§8 suggests Bugzilla/Eclipse/Mozilla
+  data), compounded here by this feature being *how* real labels get created
+  in the first place — see the ADR for why training always prefers real data
+  and only falls back to synthetic data below a low threshold.
+- **Severity and priority are two independent `MLModel` tasks**
+  (`triage_severity`, `triage_priority`), not one combined model — one
+  could regress while the other improves, and the existing champion/challenger
+  machinery already assumes one model per task.
+- **A `TriageAssessment` is computed and persisted at most once per report**
+  (reused on later views) rather than recomputed every time the detail page
+  loads — matches how a duplicate-search result wouldn't change between page
+  loads either, and avoids bloating the table with identical rows.
+
+### Known gaps (expected — later phases)
+
+- Nothing currently retrains automatically as real decisions accumulate —
+  `scripts/train_triage.py` has to be re-run manually. Phase 10 covers model
+  lifecycle more generally.
+- The misclassification report has no time filtering or component
+  breakdown yet — just suggested-value correction rates.
+
+### How to demo it
+
+1. Train: `docker compose exec api python /app/scripts/train_triage.py`
+2. Log in as `reporter@bugflow.demo`, file a report with a short description
+   — its triage panel shows "add more detail" (abstained). File one with a
+   fuller description — the panel shows a severity/priority suggestion,
+   marked "Automated", with confidence and the words that drove it.
+3. Log in as `triager@bugflow.demo`, open `/triage-queue` — undecided reports
+   show their suggested values; select some and click "Accept selected" to
+   bulk-accept, or open one and use "Change & save" to override it.
+4. `GET /defect-reports/misclassification-report` (Triager/ML
+   Engineer/Admin) shows which suggested values get corrected most often.
+
+### Real findings from testing against the live stack, not assumed
+
+- **Repeated the exact "stale image" mistake Phase 6 had just documented.**
+  After rebuilding and redeploying `api`/`worker` and verifying the backend
+  endpoints worked perfectly via `curl`, the triage queue's bulk-accept
+  checkboxes were completely missing in the browser — not disabled, not
+  erroring, just absent, with zero `/triage-suggestion` network requests
+  ever firing. Root cause: the `frontend` container had been running for 37
+  hours and was never rebuilt — only `api`/`worker` were, since those are
+  what Phase 7's *backend* changes touched, but the frontend code for the
+  triage panel and bulk-accept was sitting unbuilt. `docker compose build
+  frontend` + redeploy fixed it immediately. Lesson generalized in
+  `CLAUDE.md`: rebuild *every* service whose source changed, not just the
+  ones the current phase's backend work happened to focus on — verifying
+  the API with `curl` alone doesn't catch a stale frontend bundle.
+- Bootstrap-trained severity/priority classifiers scored `macro_f1 = 1.0` on
+  the synthetic set (expected — the keyword correlation is clean by
+  construction; see `docs/decisions/005` for why this number describes the
+  bootstrap set, not real-world accuracy). Live predictions on hand-written
+  examples matched expectations exactly (e.g. "security vulnerability...fix
+  this sprint" → critical/P2; "minor glitch...low impact" → minor/P4).
+- **Live curl/browser verification left real rows in the shared dev
+  Postgres, which then broke the backend test suite** — 3 tests failed with
+  wrong counts or `MultipleResultsFound` because they assumed a clean
+  `defect_reports`/`feedback`/`explanations` table. Fixed by adding the same
+  TRUNCATE-based isolation already used elsewhere (Phase 5/6) to every
+  defect/triage test fixture that didn't have it yet.
+- **That same live verification also broke two *unrelated* Phase 5 tests**:
+  `DELETE FROM repositories` (a cleanup step in two line-risk fixtures
+  predating Phase 6) started failing on `defect_reports_repository_id_fkey`
+  the moment a real `DefectReport` referenced a repository those fixtures
+  were trying to delete. Switched both to `TRUNCATE ... CASCADE`, which
+  needs no table list to maintain as later phases add more FKs — see
+  `CLAUDE.md`'s gotchas.
+
 ## Phase 6 — Defect reports and duplicate detection
 
 **Stories:** US-16, US-17, US-18, US-19, US-20, NFR-US-02.
