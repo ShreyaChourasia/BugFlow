@@ -3,12 +3,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.commit import Commit
 from app.models.pull_request import LineRisk, PullRequest, RiskPrediction
-from app.models.repository import MiningRun, Repository
+from app.models.repository import Repository
 from app.services import pr_scoring_service
 from app.services.line_risk_training_service import train_and_register_champion as train_line_risk
 from app.services.pr_scoring_service import _decide_conclusion, score_pull_request
@@ -188,13 +188,16 @@ def champion_and_pr_with_line_risk(
     the commit-risk model's actual output."""
     # Line-risk training is global and re-clones every repo it finds — clear
     # out anything left in this shared dev Postgres by a manual demo (see the
-    # same cleanup in conftest's repository_with_commits).
-    db_session.execute(delete(LineRisk))
-    db_session.execute(delete(RiskPrediction))
-    db_session.execute(delete(PullRequest))
-    db_session.execute(delete(Commit))
-    db_session.execute(delete(MiningRun))
-    db_session.execute(delete(Repository))
+    # same cleanup in conftest's repository_with_commits). TRUNCATE ...
+    # CASCADE, not per-table delete(): a plain `DELETE FROM repositories`
+    # started failing on its own FK constraint the moment Phase 6 added
+    # defect_reports.repository_id.
+    db_session.execute(
+        text(
+            "TRUNCATE line_risks, risk_predictions, pull_requests, commits, "
+            "mining_runs, repositories CASCADE"
+        )
+    )
 
     repo_path = tmp_path / "repo"
     init_repo(repo_path)

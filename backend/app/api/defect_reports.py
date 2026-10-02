@@ -13,9 +13,12 @@ from app.schemas.defect import (
     DefectReportRead,
     DuplicatesRead,
     MergeRequest,
+    MisclassificationReportRead,
     SuggestionsRead,
+    TriageDecisionRequest,
+    TriageSuggestionRead,
 )
-from app.services import defect_service
+from app.services import defect_service, triage_service
 from app.workers.jobs.defect import rebuild_defect_index_job
 
 router = APIRouter(prefix="/defect-reports", tags=["defect-reports"])
@@ -37,6 +40,15 @@ def rebuild_index(
     endpoints report `status: "rebuilding"` while this runs."""
     get_queue().enqueue(rebuild_defect_index_job, job_timeout=3600)
     return {"status": "rebuilding"}
+
+
+@router.get("/misclassification-report", response_model=MisclassificationReportRead)
+def get_misclassification_report(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(Role.TRIAGER, Role.ML_ENGINEER, Role.ADMIN)),
+) -> MisclassificationReportRead:
+    """US-23: which suggested severities/priorities get corrected most often."""
+    return triage_service.get_misclassification_report(db)
 
 
 @router.get("/suggestions", response_model=SuggestionsRead)
@@ -94,6 +106,33 @@ def get_duplicates(
     """US-17/US-18: candidate duplicates for an already-saved report."""
     report = _get_report_or_404(db, report_id)
     return defect_service.get_duplicates(db, report)
+
+
+@router.get("/{report_id}/triage-suggestion", response_model=TriageSuggestionRead)
+def get_triage_suggestion(
+    report_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> TriageSuggestionRead:
+    """US-21: the current automated severity/priority suggestion, or why
+    there isn't one yet (abstained / unavailable / already decided)."""
+    report = _get_report_or_404(db, report_id)
+    return triage_service.get_or_create_suggestion(db, report)
+
+
+@router.post("/{report_id}/triage", response_model=DefectReportRead)
+def decide_triage(
+    report_id: int,
+    body: TriageDecisionRequest,
+    db: Session = Depends(get_db),
+    triager: User = Depends(require_role(Role.TRIAGER)),
+) -> DefectReport:
+    """US-23: accept the automated suggestion as-is, or change it — either
+    way this is the one-click action that records the final decision."""
+    report = _get_report_or_404(db, report_id)
+    return triage_service.decide_triage(
+        db, report, triager, body.severity.value, body.priority.value
+    )
 
 
 @router.post("/{report_id}/merge", response_model=DefectReportRead)

@@ -23,7 +23,7 @@ the phase-by-phase build plan this project follows — lives in
 ## Status
 
 Built phase by phase, each one fully working and demoable before the next
-starts. **Release 1 is complete** (Phases 0–4), and Phases 5–6 are done — see
+starts. **Release 1 is complete** (Phases 0–4), and Phases 5–7 are done — see
 [`docs/PROGRESS.md`](./docs/PROGRESS.md) for exactly what was built, what
 decisions were made and why, and how to demo each phase.
 
@@ -36,7 +36,8 @@ decisions were made and why, and how to demo each phase.
 | 4 | GitHub App integration — risk posted on the actual PR (end of Release 1) | ✅ Done |
 | 5 | Line-level risk, review queue, false-alarm feedback | ✅ Done |
 | 6 | Defect reports, duplicate detection (pgvector/HNSW), triage queue | ✅ Done |
-| 7–10 | Resolver assignment, forecasting, analytics, model lifecycle | ⏳ Not started |
+| 7 | Severity/priority classification, triage suggestions, misclassification report | ✅ Done |
+| 8–10 | Resolver assignment, forecasting, analytics, model lifecycle | ⏳ Not started |
 
 ## Tech stack
 
@@ -153,16 +154,33 @@ Bulk-loads 300k synthetic (not real — see
 defect reports and reports p50/p95/p99 search latency against the live
 pgvector HNSW index (see `docs/PROGRESS.md` for the actual numbers measured).
 
+### Severity/priority suggestions
+
+```bash
+docker compose exec api python /app/scripts/train_triage.py
+```
+
+Trains on real human-decided reports once there are enough, otherwise a
+documented synthetic bootstrap set (see
+[`docs/decisions/005-triage-bootstrap-data.md`](./docs/decisions/005-triage-bootstrap-data.md)).
+A report's detail page then shows a "Triage" panel: marked **Automated**,
+with a confidence and the words that drove each suggestion, an Accept
+button, and an editable "Change & save." Too little description text gets
+"add more detail" instead of a guess. `/triage-queue` lets a triager
+bulk-accept several suggestions at once; `GET /defect-reports/misclassification-report`
+shows which suggested values get corrected most often.
+
 ## Repository structure
 
 ```
 backend/    FastAPI app + RQ workers (installable Python package)
 ml/         bugflow_ml — mining, labelling, features, models, explanations,
-            embeddings (installable, used by both the API and the workers)
+            embeddings, taxonomy (installable, used by both the API and
+            the workers)
 frontend/   Next.js app
 scripts/    seed_demo.py, train.py, train_line_risk.py, reproduce_run.py,
             export_experiment.py, replay_pr_events.py, load_test_defects.py,
-            perf/ (k6 scripts)
+            train_triage.py, perf/ (k6 scripts)
 docs/       PROGRESS.md, architecture.md, ml.md, github-app.md, decisions/ (ADRs)
 ```
 
@@ -204,6 +222,9 @@ Full interactive docs at `/docs` once the API is running. Implemented so far:
 | `GET /defect-reports/{id}/duplicates` | Candidate duplicates with shared phrases (US-17/18) |
 | `POST /defect-reports/{id}/merge` | Merge into an original, notify async (Triager, US-20) |
 | `POST /defect-reports/index/rebuild` | Rebuild the HNSW index (Admin/ML Engineer) |
+| `GET /defect-reports/{id}/triage-suggestion` | Current severity/priority suggestion (US-21) |
+| `POST /defect-reports/{id}/triage` | Accept or change the suggestion (Triager, US-23) |
+| `GET /defect-reports/misclassification-report` | Which suggested values get corrected most (Triager/ML Eng/Admin) |
 | `GET/PUT /admin/config`, `GET /admin/audit-log` | System settings (Admin) |
 | `GET/POST/PATCH /users` | User management (Admin) |
 

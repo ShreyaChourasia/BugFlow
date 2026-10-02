@@ -26,9 +26,28 @@ See master prompt §6. `backend/` = API + workers. `ml/` = installable `bugflow_
 used by both. `frontend/` = Next.js app. `scripts/` = seeding, replay, perf tests.
 
 ## Status
-Phase 6 complete (defect report CRUD, pgvector/HNSW duplicate detection, live suggestions, merge + async notify, triage queue). Phase 5 (line-level risk, review queue) and Phase 4 (GitHub App integration, end of Release 1) precede it. See `docs/PROGRESS.md` for what exists and how to demo it.
+Phase 7 complete (severity/priority classification, triage suggestions, accept/override feedback, misclassification report). Phase 6 (defect reports, duplicate detection), Phase 5 (line-level risk, review queue), and Phase 4 (GitHub App integration, end of Release 1) precede it. See `docs/PROGRESS.md` for what exists and how to demo it.
 
 ## Gotchas worth knowing before touching process entrypoints
 - **LightGBM + PyTorch (via sentence-transformers) segfault if torch loads first** in the same process (both bundle their own OpenMP runtime). `app/core/native_libs.py` imports LightGBM first and must stay imported at the top of `app.main`, `app.workers.run`, and `tests/conftest.py`. See `docs/ml.md`'s duplicate-detection section.
 - **`pip install torch` on Linux defaults to the CUDA build** (multi-GB) even in a CPU-only container. `backend/Dockerfile` passes `--extra-index-url https://download.pytorch.org/whl/cpu` to avoid it — don't drop that flag when touching the Dockerfile.
 - **Unbounded list endpoints will actually get hit at scale in this project** — `scripts/load_test_defects.py` exists specifically to bulk-load real data volume, and it found `GET /defect-reports` returning every row (no pagination) as a real bug, not a hypothetical one. Any new "list everything" endpoint should default to a `limit`.
+- **After any change, rebuild and redeploy every service whose source
+  changed — not just the one the phase's backend work happened to focus
+  on.** Phase 7 touched backend + frontend; only `api`/`worker` got rebuilt,
+  and the running `frontend` container silently kept serving the old bundle
+  for the whole live-verification session — `curl`-testing the API looked
+  perfect while the browser UI was just missing the new feature entirely,
+  no error anywhere. `docker compose build <service>` + `up -d <service>`
+  for every service with changed source, every time, before trusting a live
+  check of any kind.
+- **Test fixtures that isolate from this shared dev Postgres should
+  `TRUNCATE ... CASCADE`, not `delete()` table-by-table.** A test fixture's
+  `DELETE FROM repositories` (to clear ambient demo data) started failing on
+  its own FK constraint the moment Phase 6 added
+  `defect_reports.repository_id` — the delete chain had to list every
+  dependent table by hand and nobody updated it when a later phase added a
+  new one. `TRUNCATE a, b, c CASCADE` cascades to *any* table referencing
+  those, including ones added in a later phase, with no list to maintain.
+  See `tests/conftest.py`'s `repository_with_commits` and
+  `tests/test_pr_scoring_service.py`'s `champion_and_pr_with_line_risk`.

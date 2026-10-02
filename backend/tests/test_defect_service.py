@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import app.services.defect_service as defect_service_module
@@ -27,6 +28,10 @@ def fake_queue(monkeypatch: pytest.MonkeyPatch) -> _FakeQueue:
 
 @pytest.fixture
 def repo(db_session: Session) -> Repository:
+    # This shared dev Postgres accumulates real rows from manual/live
+    # verification (curl testing, the browser) — clear defect-domain state
+    # so exact-count assertions here reflect only what this test creates.
+    db_session.execute(text("TRUNCATE defect_reports CASCADE"))
     repository = Repository(name="demo", url="/tmp/x")
     db_session.add(repository)
     db_session.commit()
