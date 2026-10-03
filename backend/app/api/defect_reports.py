@@ -18,7 +18,11 @@ from app.schemas.defect import (
     TriageDecisionRequest,
     TriageSuggestionRead,
 )
-from app.services import defect_service, triage_service
+from app.schemas.resolver import (
+    AssignmentOverrideRequest,
+    ResolverRecommendationsRead,
+)
+from app.services import defect_service, resolver_service, triage_service
 from app.workers.jobs.defect import rebuild_defect_index_job
 
 router = APIRouter(prefix="/defect-reports", tags=["defect-reports"])
@@ -133,6 +137,32 @@ def decide_triage(
     return triage_service.decide_triage(
         db, report, triager, body.severity.value, body.priority.value
     )
+
+
+@router.get("/{report_id}/resolver-recommendations", response_model=ResolverRecommendationsRead)
+def get_resolver_recommendations(
+    report_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(Role.TRIAGER, Role.MANAGER, Role.ADMIN)),
+) -> ResolverRecommendationsRead:
+    """US-24: at least 3 ranked candidates with confidence/reason/open-defect
+    count, or "no_confident_candidate" routed to the default triage owner."""
+    report = _get_report_or_404(db, report_id)
+    return resolver_service.get_recommendations(db, report)
+
+
+@router.post("/{report_id}/assignment", response_model=DefectReportRead)
+def override_assignment(
+    report_id: int,
+    body: AssignmentOverrideRequest,
+    db: Session = Depends(get_db),
+    triager: User = Depends(require_role(Role.TRIAGER, Role.MANAGER)),
+) -> DefectReport:
+    """US-29: override with a reason — the schema layer already refused a
+    blank one. Stores the original recommendation, the override and the
+    reason as `Feedback`, the next training signal."""
+    report = _get_report_or_404(db, report_id)
+    return resolver_service.override_assignment(db, report, body.developer_id, body.reason, triager)
 
 
 @router.post("/{report_id}/merge", response_model=DefectReportRead)

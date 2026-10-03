@@ -26,7 +26,7 @@ See master prompt §6. `backend/` = API + workers. `ml/` = installable `bugflow_
 used by both. `frontend/` = Next.js app. `scripts/` = seeding, replay, perf tests.
 
 ## Status
-Phase 7 complete (severity/priority classification, triage suggestions, accept/override feedback, misclassification report). Phase 6 (defect reports, duplicate detection), Phase 5 (line-level risk, review queue), and Phase 4 (GitHub App integration, end of Release 1) precede it. See `docs/PROGRESS.md` for what exists and how to demo it.
+Phase 8 complete (resolver recommendation, OR-Tools capacity-constrained batch assignment, cold start, workload chart, override/objection as training signals) — end of Release 2. Phase 7 (severity/priority classification), Phase 6 (defect reports, duplicate detection), Phase 5 (line-level risk, review queue), and Phase 4 (GitHub App integration, end of Release 1) precede it. See `docs/PROGRESS.md` for what exists and how to demo it.
 
 ## Gotchas worth knowing before touching process entrypoints
 - **LightGBM + PyTorch (via sentence-transformers) segfault if torch loads first** in the same process (both bundle their own OpenMP runtime). `app/core/native_libs.py` imports LightGBM first and must stay imported at the top of `app.main`, `app.workers.run`, and `tests/conftest.py`. See `docs/ml.md`'s duplicate-detection section.
@@ -51,3 +51,15 @@ Phase 7 complete (severity/priority classification, triage suggestions, accept/o
   those, including ones added in a later phase, with no list to maintain.
   See `tests/conftest.py`'s `repository_with_commits` and
   `tests/test_pr_scoring_service.py`'s `champion_and_pr_with_line_risk`.
+- **`ortools` segfaults when imported via this project's host macOS Anaconda
+  Python** — a few of its bundled `.so` files on that wheel have a hardcoded
+  absolute `/opt/anaconda3/lib/...` load path baked in from its own build
+  environment, which collides with a real, differently-built `libprotobuf`
+  at that exact path if the host machine also has Anaconda installed there
+  (confirmed with `otool -L`; two independently-built copies of libprotobuf
+  loading into one process trips a duplicate-descriptor-registration abort).
+  Irrelevant to the actual shipped system — the `api`/`worker` Docker images
+  use Linux manylinux wheels and import `ortools` cleanly. Run
+  `ortools`-dependent tests (`ml/tests/test_batch_assignment.py` and anything
+  importing `bugflow_ml.assignment`) inside the Docker containers, not the
+  host interpreter, if this recurs.

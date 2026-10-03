@@ -12,6 +12,13 @@ type DefectReport = {
   severity: string | null;
   priority: string | null;
   reported_at: string;
+  assignee_id: number | null;
+};
+
+type BatchAssignResult = {
+  assignments: { defect_id: number; developer_id: number; suitability: number }[];
+  shortfall: number[];
+  total_suitability: number;
 };
 
 type TriageSuggestion = {
@@ -26,6 +33,9 @@ export default function TriageQueuePage() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
+  const [assignSelected, setAssignSelected] = useState<Set<number>>(new Set());
+  const [batchAssigning, setBatchAssigning] = useState(false);
+  const [batchResult, setBatchResult] = useState<BatchAssignResult | null>(null);
 
   useEffect(() => {
     apiFetch<DefectReport[]>("/defect-reports?status=open&limit=100")
@@ -67,6 +77,35 @@ export default function TriageQueuePage() {
     });
   }
 
+  function toggleAssign(id: number) {
+    setAssignSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function batchAssignSelected() {
+    setBatchAssigning(true);
+    try {
+      const result = await apiFetch<BatchAssignResult>("/assignments/batch", {
+        method: "POST",
+        body: JSON.stringify({ defect_ids: [...assignSelected] }),
+      });
+      setBatchResult(result);
+      const refreshed = await apiFetch<DefectReport[]>("/defect-reports?status=open&limit=100");
+      setReports(refreshed);
+      setAssignSelected(new Set());
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Failed to batch-assign the selected reports",
+      );
+    } finally {
+      setBatchAssigning(false);
+    }
+  }
+
   async function acceptSelected() {
     setAccepting(true);
     try {
@@ -104,18 +143,41 @@ export default function TriageQueuePage() {
             and merge it.
           </p>
         </div>
-        <button
-          onClick={acceptSelected}
-          disabled={selectableCount === 0 || accepting}
-          className="shrink-0 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
-        >
-          {accepting ? "Accepting…" : `Accept selected (${selectableCount})`}
-        </button>
+        <div className="flex shrink-0 gap-2">
+          <button
+            onClick={batchAssignSelected}
+            disabled={assignSelected.size === 0 || batchAssigning}
+            className="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50"
+          >
+            {batchAssigning ? "Assigning…" : `Batch assign (${assignSelected.size})`}
+          </button>
+          <button
+            onClick={acceptSelected}
+            disabled={selectableCount === 0 || accepting}
+            className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
+          >
+            {accepting ? "Accepting…" : `Accept selected (${selectableCount})`}
+          </button>
+        </div>
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
       {reports !== null && reports.length === 0 && (
         <p className="text-muted-foreground">Nothing to triage right now.</p>
+      )}
+
+      {batchResult && (
+        <div className="rounded-md border border-border p-3 text-sm">
+          <p>
+            Assigned {batchResult.assignments.length} report(s), total suitability{" "}
+            {batchResult.total_suitability.toFixed(2)}.
+          </p>
+          {batchResult.shortfall.length > 0 && (
+            <p className="text-amber-600">
+              Shortfall — no capacity for: {batchResult.shortfall.join(", ")}
+            </p>
+          )}
+        </div>
       )}
 
       <ul className="space-y-2">
@@ -133,6 +195,14 @@ export default function TriageQueuePage() {
                   onChange={() => toggle(report.id)}
                   disabled={suggestion?.status !== "available"}
                   aria-label={`Select report ${report.id} for bulk accept`}
+                />
+              )}
+              {report.assignee_id === null && (
+                <input
+                  type="checkbox"
+                  checked={assignSelected.has(report.id)}
+                  onChange={() => toggleAssign(report.id)}
+                  aria-label={`Select report ${report.id} for batch assignment`}
                 />
               )}
               <Link

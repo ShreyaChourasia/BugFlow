@@ -12,6 +12,7 @@ from app.api.mining import router as mining_router
 from app.api.pull_requests import line_risk_router
 from app.api.pull_requests import router as pull_requests_router
 from app.api.repositories import router as repositories_router
+from app.api.resolver import router as resolver_router
 from app.api.risk import router as risk_router
 from app.api.users import router as users_router
 from app.api.webhooks import router as webhooks_router
@@ -50,3 +51,4 @@ app.include_router(risk_router)
 app.include_router(webhooks_router)
 app.include_router(admin_router)
 app.include_router(defect_reports_router)
+app.include_router(resolver_router)

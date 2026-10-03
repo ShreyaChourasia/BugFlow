@@ -1,5 +1,172 @@
 # Progress log
 
+## Phase 8 — Resolver recommendation and workload-aware assignment (end of Release 2)
+
+**Stories:** US-24 to US-30.
+
+### What was built
+
+- **`bugflow_ml.features.resolver_features`**: per-(report, developer)
+  numeric feature vector — cosine text similarity against the developer's
+  past resolutions, component match count, exponentially-decayed recency,
+  declared skill match, and current load ratio. A developer with no
+  resolution history is flagged `has_history=False` and routed to cold start
+  instead of the model.
+- **`bugflow_ml.models.resolver_suitability`** (US-24): `LogisticRegression`
+  trained only on candidates with real resolution history, chronologically
+  split by `report_id` (C9). Ranking quality measured by Top-1/3/5 accuracy
+  and MRR. `score_candidates()` returns every candidate ranked, model-scored
+  where there's history, a fixed low-confidence prior where there isn't
+  (US-30). `has_confident_candidate()` backs the "no confident candidate"
+  threshold (US-24 AC2).
+- **Cold start (US-30)**: a candidate with zero resolution history always
+  gets `COLD_START_SKILL_MATCH_SCORE=0.3` (skill matches the report's
+  component) or `COLD_START_NO_SKILL_SCORE=0.05` (it doesn't) — never a model
+  prediction. This is the spec's own cold-start design, not a stand-in for
+  missing data, and stays in effect for any individual new developer even
+  once the model has plenty of real history to train on.
+- **`bugflow_ml.assignment.batch_assignment`** (US-25, US-26): OR-Tools
+  CP-SAT capacity-constrained optimizer — one bool var per (defect,
+  developer) pair, each defect assigned at most once, each developer capped
+  at `capacity − current_queue_depth` new assignments, objective maximizes
+  total suitability. Demand beyond capacity comes back as `shortfall`, never
+  silently dropped. `greedy_top1_assignment()` is the baseline the research
+  evaluation (below, and in `docs/ml.md`) compares against.
+- **`GET /defect-reports/{id}/resolver-recommendations`**: at least 3 ranked
+  candidates with confidence, reason, and current open-defect count, or
+  `"no_confident_candidate"` with the configured default triage owner
+  (`SystemConfig` key `default_triage_owner_id`), or `"unavailable"` if no
+  model has been trained yet.
+- **`POST /defect-reports/{id}/assignment`** (US-29, Triager/Manager): accept
+  a recommendation or override it — a blank reason is a 422 at the schema
+  layer, never silently accepted. Writes a `Feedback` row recording whether
+  the override matched the last recommendation (the training signal).
+- **`POST /assignments/batch`** (US-25/US-26, Manager/Triager): scores every
+  eligible (unassigned, embedded) report against every developer, solves the
+  batch, persists `Assignment` + `ResolverRecommendation` + `Explanation` rows
+  for each real assignment, returns the shortfall.
+- **`POST /assignments/{id}/objection`** (US-27, Developer, own assignments
+  only): writes a `Feedback` row recording the objection and reason.
+- **`GET /assignments/mine`** (US-27): "why me" — every assignment to the
+  logged-in developer with the reason behind it (the matching
+  recommendation's reason, or "Manually assigned, no reason on file" when
+  there isn't one).
+- **`GET /assignments/workload`** (US-28, Manager/QA/Admin): capacity vs.
+  current queue depth per developer.
+- **Frontend**: a resolver-recommendation panel on the report detail page
+  (ranked candidates, cold-start badges, reason, open-defect count, a
+  required-reason input gating Assign), a "Batch assign" selection + action
+  in the triage queue (shows assignments and shortfall), a `/my-assignments`
+  page for developers ("why me" + an objection form), and a `/workload`
+  chart for managers using `recharts`.
+- **`docs/decisions/006-resolver-bootstrap-data.md`**: the same "prefer real
+  data, synthetic data only below a threshold" pattern as Phases 6/7,
+  documenting why the resolver model's bootstrap set is deliberately
+  ambiguous (unlike Phase 6/7's trivially-separable sets).
+- **Research evaluation** (full numbers in `docs/ml.md`): the optimizer beats
+  greedy top-1 by ~11.7% total suitability on a 40-defect/10-developer
+  bootstrap batch at matching shortfall and max load; the capacity ablation
+  shows a single developer absorbing double their stated capacity with zero
+  shortfall when the constraint is dropped — exactly what US-25/US-26 exist
+  to prevent.
+- **Tests**: `ml/tests/test_batch_assignment.py` includes Hypothesis
+  property tests asserting the optimizer and the greedy baseline never
+  exceed capacity across randomly generated instances (US-25), an explicit
+  shortfall-reporting test (US-26), and an ablation test. Backend tests cover
+  override-without-reason (422), batch assign under capacity with shortfall,
+  objection ownership and feedback, workload distribution, and "why me."
+
+### Decisions
+
+- **Zero new tables or columns.** `Developer.capacity`/`current_queue_depth`/
+  `skills`, `ResolverRecommendation`, and `Assignment` already existed from
+  the Phase 1 schema; `Feedback`/`SystemConfig` are reused again exactly as
+  Phases 6/7 reused them. No Alembic migration this phase.
+- **`docs/decisions/006-resolver-bootstrap-data.md`**: same reasoning as
+  ADR 005, with a higher `MIN_TRAINING_EXAMPLES` (40 vs. triage's 25) since
+  this model separates one true resolver from ~10 candidates per report, a
+  harder problem than triage's per-report single-label classification.
+- **OR-Tools' snake_case API, not CamelCase**: both naming styles work at
+  runtime, but the installed version's mypy stubs only recognize
+  `new_bool_var`/`add`/`maximize`/`solve`/`value` — standardized on
+  snake_case for a clean `mypy` run.
+
+### Known gaps (expected — later phases)
+
+- `_load_developer_candidates()`/`_load_past_resolutions_by_developer()` load
+  every developer and every one of their past resolutions into memory for
+  every recommendation/batch call — fine at this project's scale, would need
+  pagination or pre-aggregation at real production scale.
+- The workload chart has no pagination or search — with the ~280 developers
+  this project's mined "six" repo produced, the x-axis is unreadably crowded
+  (see "Real findings," below). Fine for the handful of demo developers the
+  master prompt's walkthrough actually uses; a real deployment would need a
+  manager-facing filter or a "top N by load" view.
+- `raise_objection`/`override_assignment` don't yet retrain anything
+  automatically from the `Feedback` rows they write — same "manual retrain"
+  gap Phase 7 already has, deferred to the same later lifecycle phase.
+
+### How to demo it
+
+1. Train: `docker compose exec api python /app/scripts/train_resolver.py`
+2. Log in as `reporter@bugflow.demo`, file a report with a component a demo
+   developer has a matching skill for.
+3. Log in as `triager@bugflow.demo`, open the report — the "Resolver
+   recommendations" panel shows ≥3 ranked candidates with confidence, reason,
+   and open-defect count. Try "Assign" with a blank reason (refused), then
+   with one filled in (assigns and records the decision).
+4. In `/triage-queue`, select several unassigned reports' batch-assign
+   checkboxes and click "Batch assign" — see the assignments and any
+   shortfall.
+5. Log in as a developer linked to a `Developer` row, open `/my-assignments`
+   — see "why me" for each assignment, and try the objection form.
+6. Log in as `manager@bugflow.demo`, open `/workload` for the capacity chart.
+
+### Real findings from testing against the live stack, not assumed
+
+- **A real bug caught only by running the actual API, not by unit tests**:
+  `raise_objection()` originally wrote `Feedback.user_id = developer.id` (the
+  `Developer` row's id) instead of the acting `User`'s id — `Feedback.user_id`
+  has a foreign key to `users`, not `developers`, and those are different
+  primary-key sequences. Every objection crashed with
+  `ForeignKeyViolation: insert or update on table "feedback" violates
+  foreign key constraint "feedback_user_id_fkey"` the moment a developer's
+  id didn't happen to collide with a real user id. Unit tests with mocked
+  services never exercised the real FK; only hitting
+  `POST /assignments/{id}/objection` against the live Postgres caught it.
+  Fixed by passing the `User` actor through instead of the `Developer`.
+- **A real packaging bug on the host dev machine, not in the shipped
+  system**: `ortools` segfaulted (`Check failed:
+  GeneratedDatabase()->Add(...)`, a protobuf duplicate-descriptor-registration
+  crash) every time it was imported via the host's Anaconda Python on macOS.
+  Root cause, confirmed with `otool -L`: a few of `ortools`' own bundled
+  `.so` files on that specific PyPI wheel have a hardcoded absolute
+  `/opt/anaconda3/lib/...` load path baked in from its build environment,
+  which happens to collide with a real, differently-built `libprotobuf` at
+  that exact path on any machine that also has Anaconda installed there —
+  loading two independently-built copies of libprotobuf in one process
+  trips protobuf's own "this descriptor is already registered" abort. Fully
+  irrelevant to the actual shipped system (the `api`/`worker` Docker images
+  use Linux manylinux wheels, confirmed clean with a direct import test
+  inside the container) — worked around for local host tooling by running
+  `ortools`-dependent tests inside the Docker containers instead of the host
+  interpreter.
+- **The workload chart is real and correctly wired, but visually unusable at
+  this project's actual mined-developer count**: `GET /assignments/workload`
+  returns all ~280 developers mined from the "six" repository, and
+  `recharts`' default `BarChart` x-axis can't label that many categories
+  legibly — bars render but developer names overlap into illegible clutter.
+  Confirmed via a live browser screenshot, not assumed. Not a correctness
+  bug (the data and bars are right), a scale/filtering gap noted above.
+- Live walkthrough matched the design exactly: a report with a
+  skill-matching developer returned `"available"` (top cold-start score 0.3
+  ≥ the 0.2 confidence floor); a report whose component no developer
+  declared a skill for returned `"no_confident_candidate"` with the
+  configured default owner; batch-assigning more login-component reports
+  than one developer's remaining capacity correctly spread the overflow
+  across other developers rather than reporting a shortfall it didn't need
+  to.
+
 ## Phase 7 — Severity and priority classification
 
 **Stories:** US-21, US-22, US-23.

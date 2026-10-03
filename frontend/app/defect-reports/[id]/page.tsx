@@ -14,6 +14,7 @@ type DefectReport = {
   severity: string | null;
   priority: string | null;
   duplicate_of_id: number | null;
+  assignee_id: number | null;
 };
 
 type DuplicateCandidate = {
@@ -38,6 +39,23 @@ type TriageSuggestion = {
   severity_top_words: string[] | null;
   priority_top_words: string[] | null;
   is_automated: boolean;
+};
+
+type ResolverCandidate = {
+  developer_id: number;
+  developer_name: string;
+  score: number;
+  confidence: number;
+  is_cold_start: boolean;
+  reason: string;
+  current_open_defects: number;
+  capacity: number;
+};
+
+type ResolverRecommendations = {
+  status: "available" | "no_confident_candidate" | "unavailable";
+  candidates: ResolverCandidate[];
+  default_owner_id: number | null;
 };
 
 const SEVERITY_OPTIONS = ["blocker", "critical", "major", "minor", "trivial"];
@@ -73,6 +91,9 @@ export default function DefectReportDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [mergingId, setMergingId] = useState<number | null>(null);
   const [decidingTriage, setDecidingTriage] = useState(false);
+  const [resolver, setResolver] = useState<ResolverRecommendations | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
+  const [assigningId, setAssigningId] = useState<number | null>(null);
 
   const load = useCallback(() => {
     apiFetch<DefectReport>(`/defect-reports/${params.id}`)
@@ -98,6 +119,12 @@ export default function DefectReportDetailPage() {
       })
       .catch(() => {
         /* triage suggestion is supplementary; the report still renders without it */
+      });
+    apiFetch<ResolverRecommendations>(`/defect-reports/${params.id}/resolver-recommendations`)
+      .then(setResolver)
+      .catch(() => {
+        /* resolver panel is role-gated (triager/manager/admin) — 403 for
+        anyone else is expected, the report still renders without it */
       });
   }, [params.id]);
 
@@ -135,7 +162,29 @@ export default function DefectReportDetailPage() {
     }
   }
 
+  async function handleAssign(developerId: number) {
+    if (!overrideReason.trim()) {
+      setError("A reason is required to assign or override an assignment.");
+      return;
+    }
+    setAssigningId(developerId);
+    try {
+      await apiFetch(`/defect-reports/${params.id}/assignment`, {
+        method: "POST",
+        body: JSON.stringify({ developer_id: developerId, reason: overrideReason }),
+      });
+      setOverrideReason("");
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to assign the report");
+    } finally {
+      setAssigningId(null);
+    }
+  }
+
   const isTriager = user.status === "authenticated" && user.user.role === "triager";
+  const canAssign =
+    user.status === "authenticated" && ["triager", "manager"].includes(user.user.role);
 
   if (!report && !error) return <p className="text-muted-foreground">Loading…</p>;
 
@@ -254,6 +303,75 @@ export default function DefectReportDetailPage() {
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {canAssign && resolver && (
+        <div className="space-y-3 rounded-md border border-border p-4">
+          <h2 className="font-medium">Resolver recommendations</h2>
+
+          {resolver.status === "unavailable" && (
+            <p className="text-sm text-muted-foreground">No resolver model has been trained yet.</p>
+          )}
+
+          {resolver.status === "no_confident_candidate" && (
+            <p className="text-sm text-amber-600">
+              No confident candidate for this component — routed to the default triage owner
+              {resolver.default_owner_id && ` (user #${resolver.default_owner_id})`}.
+            </p>
+          )}
+
+          {report?.assignee_id && (
+            <p className="text-sm text-muted-foreground">
+              Currently assigned to developer #{report.assignee_id}.
+            </p>
+          )}
+
+          {resolver.candidates.length > 0 && (
+            <ul className="space-y-2">
+              {resolver.candidates.map((candidate, rank) => (
+                <li key={candidate.developer_id} className="rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">
+                      #{rank + 1} {candidate.developer_name}
+                      {candidate.is_cold_start && (
+                        <span className="ml-2 rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                          Cold start
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {(candidate.confidence * 100).toFixed(0)}% confidence
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{candidate.reason}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {candidate.current_open_defects}/{candidate.capacity} open defects
+                  </p>
+                  <button
+                    onClick={() => handleAssign(candidate.developer_id)}
+                    disabled={assigningId === candidate.developer_id}
+                    className="mt-2 rounded-md border border-border px-2 py-1 text-xs disabled:opacity-50"
+                  >
+                    {assigningId === candidate.developer_id ? "Assigning…" : "Assign"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="space-y-1">
+            <label className="block text-xs text-muted-foreground">
+              Reason (required to assign or override)
+            </label>
+            <input
+              type="text"
+              value={overrideReason}
+              onChange={(e) => setOverrideReason(e.target.value)}
+              placeholder="Why this developer?"
+              className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+            />
+          </div>
         </div>
       )}
 
