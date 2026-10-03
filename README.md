@@ -23,9 +23,9 @@ the phase-by-phase build plan this project follows — lives in
 ## Status
 
 Built phase by phase, each one fully working and demoable before the next
-starts. **Release 1 is complete** (Phases 0–4), and Phases 5–7 are done — see
-[`docs/PROGRESS.md`](./docs/PROGRESS.md) for exactly what was built, what
-decisions were made and why, and how to demo each phase.
+starts. **Release 1 is complete** (Phases 0–4), and **Release 2 is complete**
+(Phases 5–8) — see [`docs/PROGRESS.md`](./docs/PROGRESS.md) for exactly what
+was built, what decisions were made and why, and how to demo each phase.
 
 | Phase | What it adds | Status |
 |---|---|---|
@@ -37,7 +37,8 @@ decisions were made and why, and how to demo each phase.
 | 5 | Line-level risk, review queue, false-alarm feedback | ✅ Done |
 | 6 | Defect reports, duplicate detection (pgvector/HNSW), triage queue | ✅ Done |
 | 7 | Severity/priority classification, triage suggestions, misclassification report | ✅ Done |
-| 8–10 | Resolver assignment, forecasting, analytics, model lifecycle | ⏳ Not started |
+| 8 | Resolver recommendation, capacity-constrained batch assignment (end of Release 2) | ✅ Done |
+| 9–10 | Forecasting, analytics, model lifecycle | ⏳ Not started |
 
 ## Tech stack
 
@@ -46,7 +47,7 @@ decisions were made and why, and how to demo each phase.
 | Backend API | Python 3.11, FastAPI, Pydantic v2, SQLAlchemy 2.x + Alembic |
 | Database | PostgreSQL 16 + pgvector (HNSW) |
 | Background jobs | Redis + RQ |
-| ML | scikit-learn, LightGBM, SHAP, MLflow, PyDriller (repo mining), sentence-transformers |
+| ML | scikit-learn, LightGBM, SHAP, MLflow, PyDriller (repo mining), sentence-transformers, OR-Tools (batch assignment) |
 | Frontend | Next.js (App Router) + TypeScript, Tailwind CSS |
 | Auth | JWT (access + refresh), bcrypt, role-based access control |
 | Testing | pytest, Vitest |
@@ -170,6 +171,29 @@ button, and an editable "Change & save." Too little description text gets
 bulk-accept several suggestions at once; `GET /defect-reports/misclassification-report`
 shows which suggested values get corrected most often.
 
+### Resolver recommendation and batch assignment
+
+```bash
+docker compose exec api python /app/scripts/train_resolver.py
+```
+
+Trains on real resolved-defect history once there's enough, otherwise a
+documented synthetic bootstrap set (see
+[`docs/decisions/006-resolver-bootstrap-data.md`](./docs/decisions/006-resolver-bootstrap-data.md)).
+A report's detail page then shows a "Resolver recommendations" panel for
+Triager/Manager roles: at least 3 ranked candidates with confidence, reason,
+and current open-defect count — below the confidence floor, it names the
+configured default triage owner instead of guessing. Assigning or overriding
+requires a non-blank reason (refused at the API otherwise), and the
+original recommendation, the override, and the reason are all stored as a
+training signal. `/triage-queue` adds a "Batch assign" selection that
+capacity-constrains the whole batch at once via OR-Tools, showing the
+resulting assignments and any shortfall. `/my-assignments` (Developer role)
+shows "why me" for each assignment with an objection form; `/workload`
+(Manager role) charts capacity against current load per developer. See
+[`docs/ml.md`](./docs/ml.md) for the optimizer-vs-greedy research evaluation
+and the capacity-constraint ablation.
+
 ## Repository structure
 
 ```
@@ -180,7 +204,7 @@ ml/         bugflow_ml — mining, labelling, features, models, explanations,
 frontend/   Next.js app
 scripts/    seed_demo.py, train.py, train_line_risk.py, reproduce_run.py,
             export_experiment.py, replay_pr_events.py, load_test_defects.py,
-            train_triage.py, perf/ (k6 scripts)
+            train_triage.py, train_resolver.py, perf/ (k6 scripts)
 docs/       PROGRESS.md, architecture.md, ml.md, github-app.md, decisions/ (ADRs)
 ```
 
@@ -225,6 +249,12 @@ Full interactive docs at `/docs` once the API is running. Implemented so far:
 | `GET /defect-reports/{id}/triage-suggestion` | Current severity/priority suggestion (US-21) |
 | `POST /defect-reports/{id}/triage` | Accept or change the suggestion (Triager, US-23) |
 | `GET /defect-reports/misclassification-report` | Which suggested values get corrected most (Triager/ML Eng/Admin) |
+| `GET /defect-reports/{id}/resolver-recommendations` | ≥3 ranked resolver candidates, or the default owner (Triager/Manager/Admin, US-24) |
+| `POST /defect-reports/{id}/assignment` | Accept or override the recommendation, reason required (Triager/Manager, US-29) |
+| `POST /assignments/batch` | Capacity-constrained batch assignment via OR-Tools, shortfall reported (Triager/Manager, US-25/26) |
+| `POST /assignments/{id}/objection` | A developer's objection to their own assignment (Developer, US-27) |
+| `GET /assignments/mine` | "Why me" — the logged-in developer's assignments and reasons (US-27) |
+| `GET /assignments/workload` | Capacity vs. current load per developer (Manager/QA/Admin, US-28) |
 | `GET/PUT /admin/config`, `GET /admin/audit-log` | System settings (Admin) |
 | `GET/POST/PATCH /users` | User management (Admin) |
 

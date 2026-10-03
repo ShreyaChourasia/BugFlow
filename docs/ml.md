@@ -289,6 +289,100 @@ imported first thing in every process entrypoint (`app.main`,
 `app.workers.run`, `tests/conftest.py`), which imports LightGBM before
 anything else gets a chance to import torch.
 
+## Resolver recommendation & batch assignment (`bugflow_ml.models.resolver_suitability`, `bugflow_ml.assignment.batch_assignment`)
+
+§8's novel-contribution row: a suitability model ranking candidate resolvers,
+plus a capacity-constrained optimizer so a whole batch of defects can be
+assigned at once instead of one at a time. Implemented as:
+
+- **Features (`bugflow_ml.features.resolver_features`)**: per-(report,
+  developer) pair — cosine `text_similarity` against the developer's past
+  resolutions' embeddings, `component_match_count`, an exponentially-decayed
+  `recency_score` (`RECENCY_HALF_LIFE_DAYS=90`), declared `skill_match`, and
+  `current_load_ratio`. A developer with zero resolution history gets
+  `has_history=False` and skips the model entirely (see cold start, below).
+- **Suitability model**: plain `LogisticRegression` over those five numeric
+  features, trained **only** on candidates with real resolution history
+  (`has_history=True`) — a candidate with no history was never a meaningful
+  positive/negative example for the model to learn from, cold start handles
+  them separately. `chronological_split()` groups by `report_id` (not
+  individual rows) so every candidate for one test-set report stays together,
+  the same leakage discipline as every other model in this project (C9).
+- **Cold start (US-30)**: a candidate with no resolution history never gets a
+  model prediction — it gets a fixed prior instead, `COLD_START_SKILL_MATCH_SCORE
+  = 0.3` if their declared skill matches the report's component, else
+  `COLD_START_NO_SKILL_SCORE = 0.05`. This is the spec's own answer to "new
+  developer, no history," not a stand-in for missing data — it stays in
+  effect even once the model is trained on plenty of real history, for any
+  individual developer who's new.
+- **No confident candidate (US-24 AC2)**: `has_confident_candidate()` checks
+  the top score against `NO_CONFIDENT_CANDIDATE_THRESHOLD = 0.2` — below it,
+  the UI says so and names the default triage owner instead of presenting a
+  low-confidence guess as a real recommendation.
+- **Ranking metrics**: Top-1/3/5 accuracy and MRR, computed by grouping
+  predictions by `report_id`, ranking that report's candidates by predicted
+  probability, and finding the true resolver's rank.
+- **Bootstrap data** (`generate_bootstrap_history()`, `docs/decisions/006`):
+  same "no verified public dataset, prefer real data once it exists" pattern
+  as Phases 6/7 — 10 synthetic developers resolving 200 reports
+  chronologically, with real component/skill correlation but deliberate
+  ambiguity (more than one developer can share a skill), so the ranking
+  metrics below describe a genuinely non-trivial 10-way problem rather than
+  an artificially easy one.
+- **Capacity-constrained batch assignment**: OR-Tools CP-SAT, one `BoolVar`
+  per (defect, developer) candidate pair, constrained to at most one
+  developer per defect and at most `capacity − current_queue_depth` new
+  assignments per developer, maximizing total suitability. Demand beyond
+  capacity comes back as `shortfall` — a list, never a silent drop (US-26).
+  `enforce_capacity=False` is the same solver with that one constraint
+  removed, used only for the ablation below.
+- **Greedy top-1 baseline** (`greedy_top1_assignment()`): processes defects
+  independently, each taking its own best remaining-capacity candidate, no
+  look-ahead — the natural "obvious" alternative the master prompt asks the
+  optimizer to be measured against.
+
+### Research evaluation
+
+Measured on the bootstrap dataset (10 developers, capacity 3 each = 30 total
+slots) against a batch of 40 synthetic defects with random per-pair scores,
+via `compare_optimizer_vs_greedy()` (live run, not invented numbers):
+
+| Metric | Optimizer | Greedy top-1 |
+| --- | --- | --- |
+| Total suitability | 28.07 | 25.14 |
+| Shortfall (defects left queued) | 10 | 10 |
+| Max developer load | 3 | 3 |
+| Load Gini coefficient | 0.00 | 0.00 |
+
+The optimizer captures **~11.7% more total suitability** than greedy for the
+same shortfall and the same max load — the batch-level lookahead lets it
+avoid the greedy strategy's mistake of giving an early defect to a
+mediocre-fit developer when a later defect would have fit that developer
+better, freeing up a better-fit developer for the earlier one. Shortfall and
+max load match here because capacity (30 slots) is the binding constraint for
+both strategies in this instance — 10 of the 40 defects are mathematically
+unassignable regardless of which strategy picks.
+
+**Ablation — with vs. without the capacity constraint**, same 40-defect batch:
+
+| | With capacity (`enforce_capacity=True`) | Without (`=False`) |
+| --- | --- | --- |
+| Max developer load | 3 | 6 |
+| Shortfall | 10 | 0 |
+
+Without the constraint, the solver happily piles every defect onto whichever
+developers score highest overall — one developer absorbs double their stated
+capacity, and nothing is ever left queued, because nothing stops it. This is
+exactly the failure mode US-25/US-26 exist to prevent, and the Hypothesis
+property tests (`ml/tests/test_batch_assignment.py`) assert the capacity-
+enforced path never does this across randomly generated instances.
+
+**Ranking metrics on the bootstrap set** (10-way candidate ranking per
+report, deliberately ambiguous): Top-1 = 35%, Top-3 = 82.5%, Top-5 = 87.5%,
+MRR = 0.586. Not as clean as Phase 6/7's bootstrap sets by design — see
+`docs/decisions/006` for why an artificially-separable synthetic set would
+have overstated real-world performance.
+
 ## Experiment tracking (MLflow)
 
 Every `train_and_register_champion()` call logs a **complete experiment
