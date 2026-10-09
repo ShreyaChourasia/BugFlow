@@ -2,6 +2,15 @@
 
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import {
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import { ApiError, apiFetch, clearTokens } from "@/lib/api";
 import { useCurrentUser } from "@/lib/use-current-user";
@@ -58,6 +67,21 @@ type ResolverRecommendations = {
   default_owner_id: number | null;
 };
 
+type ForecastCurvePoint = {
+  day: number;
+  probability_unresolved: number;
+};
+
+type Forecast = {
+  status: "available" | "unavailable";
+  median_days: number | null;
+  p90_days: number | null;
+  curve: ForecastCurvePoint[] | null;
+  confidence: number | null;
+  at_risk: boolean;
+  estimate_text: string | null;
+};
+
 const SEVERITY_OPTIONS = ["blocker", "critical", "major", "minor", "trivial"];
 const PRIORITY_OPTIONS = ["P1", "P2", "P3", "P4", "P5"];
 
@@ -94,6 +118,7 @@ export default function DefectReportDetailPage() {
   const [resolver, setResolver] = useState<ResolverRecommendations | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
   const [assigningId, setAssigningId] = useState<number | null>(null);
+  const [forecast, setForecast] = useState<Forecast | null>(null);
 
   const load = useCallback(() => {
     apiFetch<DefectReport>(`/defect-reports/${params.id}`)
@@ -125,6 +150,11 @@ export default function DefectReportDetailPage() {
       .catch(() => {
         /* resolver panel is role-gated (triager/manager/admin) — 403 for
         anyone else is expected, the report still renders without it */
+      });
+    apiFetch<Forecast>(`/defect-reports/${params.id}/forecast`)
+      .then(setForecast)
+      .catch(() => {
+        /* forecast is supplementary; the report still renders without it */
       });
   }, [params.id]);
 
@@ -372,6 +402,77 @@ export default function DefectReportDetailPage() {
               className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
             />
           </div>
+        </div>
+      )}
+
+      {forecast?.status === "unavailable" && (
+        <div className="rounded-md border border-border p-4">
+          <h2 className="mb-1 font-medium">Resolution forecast</h2>
+          <p className="text-sm text-muted-foreground">
+            No forecast model has been trained yet, or this report doesn&apos;t have a
+            severity/priority to forecast from.
+          </p>
+        </div>
+      )}
+
+      {forecast?.status === "available" && (
+        <div className="space-y-3 rounded-md border border-border p-4">
+          <div className="flex items-center gap-2">
+            <h2 className="font-medium">Resolution forecast</h2>
+            {forecast.at_risk && (
+              <span className="rounded bg-red-100 px-2 py-0.5 text-xs text-red-700">At risk</span>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {forecast.estimate_text}
+            {forecast.confidence !== null &&
+              ` (model confidence: ${(forecast.confidence * 100).toFixed(0)}%)`}
+          </p>
+          {forecast.curve && forecast.curve.length > 0 && (
+            <div className="h-56">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={forecast.curve}>
+                  <XAxis
+                    dataKey="day"
+                    type="number"
+                    // Survival curves have a long tail (rare slow cases can push
+                    // the dataset's max day far out) — zooming to ~1.5x P90
+                    // keeps the median/P90 markers and the actual curve shape
+                    // readable instead of squashing them against the axis.
+                    domain={[0, (forecast.p90_days ?? 1) * 1.5]}
+                    allowDataOverflow
+                    tickFormatter={(value: number) => value.toFixed(1)}
+                    label={{ value: "Days since reported", position: "insideBottom", offset: -5 }}
+                    tick={{ fontSize: 12 }}
+                  />
+                  <YAxis domain={[0, 1]} tick={{ fontSize: 12 }} />
+                  <Tooltip
+                    formatter={(value: number) => `${(value * 100).toFixed(0)}% unresolved`}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="probability_unresolved"
+                    stroke="#2563eb"
+                    dot={false}
+                  />
+                  {forecast.median_days !== null && (
+                    <ReferenceLine
+                      x={forecast.median_days}
+                      stroke="#16a34a"
+                      label={{ value: "Median", position: "insideTopLeft", fontSize: 11 }}
+                    />
+                  )}
+                  {forecast.p90_days !== null && (
+                    <ReferenceLine
+                      x={forecast.p90_days}
+                      stroke="#dc2626"
+                      label={{ value: "P90", position: "insideBottomRight", fontSize: 11 }}
+                    />
+                  )}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
       )}
 

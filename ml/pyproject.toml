@@ -12,6 +12,7 @@ dependencies = [
     "mlflow>=2.14",
     "sentence-transformers>=3.0",
     "ortools>=9.10",
+    "lifelines>=0.27",
 ]
 
 [project.optional-dependencies]

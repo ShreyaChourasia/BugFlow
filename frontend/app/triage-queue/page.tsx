@@ -27,9 +27,15 @@ type TriageSuggestion = {
   priority: string | null;
 };
 
+type ForecastSummary = {
+  status: "available" | "unavailable";
+  at_risk: boolean;
+};
+
 export default function TriageQueuePage() {
   const [reports, setReports] = useState<DefectReport[] | null>(null);
   const [suggestions, setSuggestions] = useState<Record<number, TriageSuggestion>>({});
+  const [forecasts, setForecasts] = useState<Record<number, ForecastSummary>>({});
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
@@ -56,6 +62,21 @@ export default function TriageQueuePage() {
         );
         setSuggestions(
           Object.fromEntries(results.filter((r): r is [number, TriageSuggestion] => r !== null)),
+        );
+
+        // US-33: at-risk flags for every open report, same bounded-parallel
+        // fetch pattern as the triage suggestions above.
+        const forecastResults = await Promise.all(
+          loaded.map((r) =>
+            apiFetch<ForecastSummary>(`/defect-reports/${r.id}/forecast`)
+              .then((forecast) => [r.id, forecast] as const)
+              .catch(() => null),
+          ),
+        );
+        setForecasts(
+          Object.fromEntries(
+            forecastResults.filter((r): r is [number, ForecastSummary] => r !== null),
+          ),
         );
       })
       .catch((err) => {
@@ -183,11 +204,20 @@ export default function TriageQueuePage() {
       <ul className="space-y-2">
         {reports?.map((report) => {
           const suggestion = suggestions[report.id];
+          const forecast = forecasts[report.id];
           return (
             <li
               key={report.id}
               className="flex items-center gap-3 rounded-md border border-border p-3"
             >
+              {forecast?.at_risk && (
+                <span
+                  className="shrink-0 rounded bg-red-100 px-2 py-0.5 text-xs text-red-700"
+                  title="Already past this report's expected P90 resolution window"
+                >
+                  At risk
+                </span>
+              )}
               {report.severity === null && (
                 <input
                   type="checkbox"
