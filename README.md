@@ -23,9 +23,10 @@ the phase-by-phase build plan this project follows — lives in
 ## Status
 
 Built phase by phase, each one fully working and demoable before the next
-starts. **Release 1 is complete** (Phases 0–4), and **Release 2 is complete**
-(Phases 5–8) — see [`docs/PROGRESS.md`](./docs/PROGRESS.md) for exactly what
-was built, what decisions were made and why, and how to demo each phase.
+starts. **Release 1 is complete** (Phases 0–4), **Release 2 is complete**
+(Phases 5–8), and Phase 9 is done — see
+[`docs/PROGRESS.md`](./docs/PROGRESS.md) for exactly what was built, what
+decisions were made and why, and how to demo each phase.
 
 | Phase | What it adds | Status |
 |---|---|---|
@@ -38,7 +39,8 @@ was built, what decisions were made and why, and how to demo each phase.
 | 6 | Defect reports, duplicate detection (pgvector/HNSW), triage queue | ✅ Done |
 | 7 | Severity/priority classification, triage suggestions, misclassification report | ✅ Done |
 | 8 | Resolver recommendation, capacity-constrained batch assignment (end of Release 2) | ✅ Done |
-| 9–10 | Forecasting, analytics, model lifecycle | ⏳ Not started |
+| 9 | Resolution forecasting (survival analysis, at-risk flags) | ✅ Done |
+| 10 | Analytics, model lifecycle, guidance, hardening (end of Release 3) | ⏳ Not started |
 
 ## Tech stack
 
@@ -47,7 +49,7 @@ was built, what decisions were made and why, and how to demo each phase.
 | Backend API | Python 3.11, FastAPI, Pydantic v2, SQLAlchemy 2.x + Alembic |
 | Database | PostgreSQL 16 + pgvector (HNSW) |
 | Background jobs | Redis + RQ |
-| ML | scikit-learn, LightGBM, SHAP, MLflow, PyDriller (repo mining), sentence-transformers, OR-Tools (batch assignment) |
+| ML | scikit-learn, LightGBM, SHAP, MLflow, PyDriller (repo mining), sentence-transformers, OR-Tools (batch assignment), lifelines (survival analysis) |
 | Frontend | Next.js (App Router) + TypeScript, Tailwind CSS |
 | Auth | JWT (access + refresh), bcrypt, role-based access control |
 | Testing | pytest, Vitest |
@@ -194,6 +196,24 @@ shows "why me" for each assignment with an objection form; `/workload`
 [`docs/ml.md`](./docs/ml.md) for the optimizer-vs-greedy research evaluation
 and the capacity-constraint ablation.
 
+### Resolution forecasting
+
+```bash
+docker compose exec api python /app/scripts/train_forecast.py
+```
+
+Trains a Kaplan-Meier-by-severity baseline and a Cox proportional-hazards
+main model on every defect report's elapsed time — resolved reports as real
+events, still-open reports as **censored** observations, never dropped (see
+[`docs/decisions/007-resolution-forecast-bootstrap-data.md`](./docs/decisions/007-resolution-forecast-bootstrap-data.md)
+for the synthetic fallback). A report's detail page then shows a
+"Resolution forecast" panel: a probability-vs-time curve with median/P90
+reference lines, a plain "Likely within X-Y days" estimate for the
+reporter, and an "At risk" badge once a still-open report's elapsed time
+passes its own P90 window. The same badge appears in `/triage-queue` next
+to any overdue open report. See [`docs/ml.md`](./docs/ml.md) for the
+Cox-vs-Kaplan-Meier concordance comparison.
+
 ## Repository structure
 
 ```
@@ -204,7 +224,8 @@ ml/         bugflow_ml — mining, labelling, features, models, explanations,
 frontend/   Next.js app
 scripts/    seed_demo.py, train.py, train_line_risk.py, reproduce_run.py,
             export_experiment.py, replay_pr_events.py, load_test_defects.py,
-            train_triage.py, train_resolver.py, perf/ (k6 scripts)
+            train_triage.py, train_resolver.py, train_forecast.py,
+            perf/ (k6 scripts)
 docs/       PROGRESS.md, architecture.md, ml.md, github-app.md, decisions/ (ADRs)
 ```
 
@@ -255,6 +276,7 @@ Full interactive docs at `/docs` once the API is running. Implemented so far:
 | `POST /assignments/{id}/objection` | A developer's objection to their own assignment (Developer, US-27) |
 | `GET /assignments/mine` | "Why me" — the logged-in developer's assignments and reasons (US-27) |
 | `GET /assignments/workload` | Capacity vs. current load per developer (Manager/QA/Admin, US-28) |
+| `GET /defect-reports/{id}/forecast` | Probability curve, median/P90, estimate, at-risk flag (US-31/32/33) |
 | `GET/PUT /admin/config`, `GET /admin/audit-log` | System settings (Admin) |
 | `GET/POST/PATCH /users` | User management (Admin) |
 

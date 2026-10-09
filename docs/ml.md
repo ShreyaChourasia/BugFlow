@@ -383,6 +383,91 @@ MRR = 0.586. Not as clean as Phase 6/7's bootstrap sets by design — see
 `docs/decisions/006` for why an artificially-separable synthetic set would
 have overstated real-world performance.
 
+## Resolution forecasting (`bugflow_ml.models.resolution_forecast`)
+
+§8's stated design for this task: "Kaplan-Meier by severity as the
+baseline, then Cox PH or a random survival forest," scored by concordance
+index and calibration, with the median/P90/at-risk flag as outputs.
+Implemented as:
+
+- **Censored data (US-31 AC)**: every `DefectReport` with a severity and
+  priority set is an example — a resolved one contributes a real duration
+  (`resolved_at - reported_at`) with `event=1`; a still-open one
+  contributes a **censored** duration (`now - reported_at`) with `event=0`.
+  Dropping unresolved reports would mean training only on cases that
+  happened to finish quickly enough to already be resolved — a systematic
+  bias survival analysis exists specifically to avoid.
+- **Kaplan-Meier baseline**: fit separately per severity group on the
+  training split; since a KM-by-group model has no per-individual risk
+  score of its own, each test example is scored for concordance by its own
+  group's median survival time (lifelines' `concordance_index()` expects a
+  *higher* score to mean longer predicted survival — the same convention
+  `-predict_partial_hazard()` satisfies for Cox, since partial hazard runs
+  the other way).
+- **Cox proportional hazards** (the main model): `severity_rank`,
+  `priority_rank` (ordinal encodings of the taxonomy), and one-hot
+  `component` columns, fit with `CoxPHFitter(penalizer=0.1)` — the small L2
+  penalty keeps the fit stable when a few component categories have little
+  training data, rather than failing to converge. `predict_median()` /
+  `predict_percentile(p=0.1)` give the median and P90; lifelines returns
+  `+inf` for either when the fitted curve never crosses that probability
+  within the observed horizon — clipped to the longest observed training
+  duration so **the output is always a concrete number** (US-31's "always
+  stated"), never infinity.
+- **Main drivers (C3)**: the same coefficient × feature-value attribution
+  every linear/log-linear model in this project uses, indexed into Cox's
+  own `params_` (log hazard ratios) for this specific report's feature row.
+- **At-risk flag (US-33)**: `is_at_risk()` — a still-open defect whose
+  elapsed time already exceeds *that defect's own* predicted P90 is
+  flagged. A resolved defect is never at-risk, regardless of how long it
+  took; there's nothing left to wait for.
+- **Reporter estimate (US-32)**: `"Likely within {median}-{p90} days"` —
+  the same median/P90 the chart shows, just in one plain sentence.
+- **Bootstrap data** (`generate_bootstrap_history()`, `docs/decisions/007`):
+  durations are drawn from a genuine Weibull **proportional-hazards**
+  model — not merely "higher severity picks a smaller random number" — so
+  Cox's concordance on this set measures how well it recovers a
+  well-specified problem, not an artifact of a mismatched data-generating
+  process. Severity, priority, *and* component all genuinely shorten the
+  simulated time (component is deliberately invisible to the KM-by-severity
+  baseline, so Cox has real information the baseline can't use), and ~25%
+  of cases are held censored to exercise that path even in the bootstrap
+  set.
+
+### Research evaluation
+
+Measured on the bootstrap set (250 reports, chronological 80/20 split, live
+run, not invented numbers):
+
+| Metric | Cox PH | Kaplan-Meier by severity |
+| --- | --- | --- |
+| Concordance index | 0.78 | 0.74 |
+
+Cox PH beats the severity-only baseline because it can see priority and
+component too, both of which genuinely affect the simulated resolution time
+in this bootstrap world (by design — see `docs/decisions/007`). Example
+predictions from the trained bootstrap model: a `blocker`/`P1`/`billing`
+report gets a median of 0.37 days (P90 0.85) — worked on within hours, as a
+production blocker should be — while a `trivial`/`P5`/`login` report gets a
+median of 6.9 days (P90 25.7), and a `major`/`P3`/`search` report lands in
+between at a median of 1.7 days (P90 4.4).
+
+**A genuine modeling pitfall found during development, not by unit tests
+alone**: an earlier version of the bootstrap generator drew durations from
+a plain exponential distribution with a rate that was *linear* in the
+covariates (`rate = (1 + 0.5·severity + ...) / 10`), which is not actually
+a proportional-hazards process — Cox PH scored barely above chance
+(concordance ≈ 0.53) even with the *true* generating parameters used
+directly as an oracle risk score, confirming the ceiling was a property of
+the mismatched data-generating process, not a bug in the fitting code.
+Switching to an explicit Weibull **PH** data-generating process (the family
+Cox is actually built to recover) raised both the achievable ceiling and
+the fitted model's concordance to the 0.78 reported above. Documented here
+because it's a real, non-obvious failure mode for anyone writing a
+synthetic survival-analysis dataset: "correlated with the outcome" is not
+the same as "proportional hazards," and only the latter is what Cox PH can
+actually fit well.
+
 ## Experiment tracking (MLflow)
 
 Every `train_and_register_champion()` call logs a **complete experiment

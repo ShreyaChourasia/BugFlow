@@ -26,7 +26,7 @@ See master prompt §6. `backend/` = API + workers. `ml/` = installable `bugflow_
 used by both. `frontend/` = Next.js app. `scripts/` = seeding, replay, perf tests.
 
 ## Status
-Phase 8 complete (resolver recommendation, OR-Tools capacity-constrained batch assignment, cold start, workload chart, override/objection as training signals) — end of Release 2. Phase 7 (severity/priority classification), Phase 6 (defect reports, duplicate detection), Phase 5 (line-level risk, review queue), and Phase 4 (GitHub App integration, end of Release 1) precede it. See `docs/PROGRESS.md` for what exists and how to demo it.
+Phase 9 complete (resolution forecasting: Kaplan-Meier baseline + Cox PH survival model, censored unresolved defects, median/P90/at-risk flag). Phase 8 (resolver recommendation, OR-Tools batch assignment, end of Release 2), Phase 7 (severity/priority classification), Phase 6 (defect reports, duplicate detection), Phase 5 (line-level risk, review queue), and Phase 4 (GitHub App integration, end of Release 1) precede it. See `docs/PROGRESS.md` for what exists and how to demo it.
 
 ## Gotchas worth knowing before touching process entrypoints
 - **LightGBM + PyTorch (via sentence-transformers) segfault if torch loads first** in the same process (both bundle their own OpenMP runtime). `app/core/native_libs.py` imports LightGBM first and must stay imported at the top of `app.main`, `app.workers.run`, and `tests/conftest.py`. See `docs/ml.md`'s duplicate-detection section.

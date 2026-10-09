@@ -1,5 +1,154 @@
 # Progress log
 
+## Phase 9 — Resolution forecasting
+
+**Stories:** US-31, US-32, US-33.
+
+### What was built
+
+- **`bugflow_ml.models.resolution_forecast`** (US-31): a Kaplan-Meier-by-
+  severity baseline and a Cox proportional-hazards main model, trained on
+  every `DefectReport` with a severity and priority set — resolved reports
+  as real events, still-open reports as **censored** observations (US-31
+  AC), never dropped. Chronologically split (C9) same as every other model.
+- **Always-stated median/P90 (US-31)**: `predict_forecast()` always returns
+  a concrete median and P90 — lifelines' `+inf` (when the fitted curve
+  never crosses that probability within the observed horizon) is clipped to
+  the longest observed training duration, never surfaced as infinity.
+- **Reporter estimate (US-32)**: `"Likely within {median}-{p90} days"`,
+  derived from the same median/P90 the chart shows.
+- **At-risk flag (US-33)**: `is_at_risk()` — a still-open defect whose
+  elapsed time already exceeds *its own* predicted P90 is flagged; a
+  resolved defect is never at-risk.
+- **`GET /defect-reports/{id}/forecast`**: resolves severity/priority from
+  the human decision if there is one, otherwise the current automated
+  triage suggestion (reusing US-21's own computation rather than guessing
+  independently) — `"unavailable"` if neither exists yet or no model has
+  been trained. Persists a `ResolutionForecast` row and an `Explanation`
+  (C3) with the top coefficient-weighted drivers behind the forecast.
+- **Frontend**: a forecast chart (probability-unresolved vs. days, with
+  median/P90 reference lines) and the plain-language estimate on the report
+  detail page, an "At risk" badge on the report detail page and in the
+  triage queue (fetched per open report the same bounded-parallel way
+  Phase 7's bulk triage suggestions already are).
+- **`docs/decisions/007-resolution-forecast-bootstrap-data.md`**: the same
+  "prefer real data, synthetic data only below a threshold" pattern as
+  Phases 6-8, documenting why the bootstrap generator uses a genuine
+  Weibull proportional-hazards process rather than an arbitrary correlated
+  random duration.
+- **Research evaluation** (full numbers in `docs/ml.md`): Cox PH reaches a
+  concordance index of 0.78 against the Kaplan-Meier-by-severity baseline's
+  0.74 on the bootstrap set — Cox wins because it can see priority and
+  component too, both of which genuinely drive the simulated resolution
+  time, not just severity.
+- **Tests**: `ml/tests/test_resolution_forecast.py` covers censored data
+  inclusion, training below the minimum example count being rejected,
+  concordance beating chance for both the baseline and the main model,
+  median/P90 always being finite with P90 ≥ median, severity/priority
+  correctly shortening predicted time, and all three at-risk branches.
+  Backend tests cover the bootstrap/real-data training switch, champion
+  promotion, prediction returning `None` without a champion, and the full
+  API surface (unavailable without severity or a model, the estimate text
+  and curve when available, at-risk true for an overdue open report, and
+  always false once resolved).
+
+### Decisions
+
+- **Zero new tables or columns.** `ResolutionForecast` already existed from
+  the Phase 1 schema with exactly the fields this phase needed
+  (`median_days`, `p90_days`, `curve`, `confidence`, `model_version`,
+  `at_risk`). No Alembic migration this phase.
+- **Forecasting reuses the triage suggestion, it doesn't duplicate it.** A
+  report without a human-decided severity/priority yet still gets a
+  forecast, conditioned on the current automated triage suggestion (US-21)
+  if one is available — avoids guessing independently from scratch, and
+  means the forecast chart and the triage panel never disagree about what
+  severity they're both reacting to.
+- **A real bug found while building the bootstrap generator, not by unit
+  tests alone**: `lifelines`' `concordance_index()` expects a *higher*
+  score to mean *longer* predicted survival — the exact opposite
+  convention from a raw hazard/risk score, where higher means shorter
+  survival. The Kaplan-Meier baseline's concordance helper initially
+  negated the group median (treating it like a hazard score), which
+  silently flipped its ranking and made the "baseline" score *worse than
+  random* on a correctly-specified dataset. Caught by sanity-checking the
+  *true* data-generating parameters as an "oracle" risk score and finding
+  it scored below 0.5 too — a model that can't even get credit for knowing
+  the real answer is a sign the evaluation itself is wrong, not the model.
+  Fixed by leaving the median unsigned, matching Cox's own
+  `-predict_partial_hazard()` convention. See `docs/ml.md`'s research
+  evaluation section for the full writeup, including a second, related
+  pitfall (an exponential-vs-proportional-hazards data-generating mismatch)
+  found via the same oracle-score sanity check.
+
+### Known gaps (expected — later phases)
+
+- The model only sees `severity`, `priority`, and `component` — not
+  assignee workload at report time or reporter history, since this project
+  doesn't retain the former as a historical snapshot and the latter isn't
+  in the §7 data model (noted in `docs/decisions/007`).
+- Nothing retrains automatically as real resolutions accumulate —
+  `scripts/train_forecast.py` has to be re-run manually, the same gap
+  Phases 7/8 already have, deferred to the Phase 10 lifecycle work.
+- The forecast chart has no explicit "insufficient data" distinction
+  separate from "unavailable" — both collapse to the same status.
+
+### How to demo it
+
+1. Train: `docker compose exec api python /app/scripts/train_forecast.py`
+2. Open any defect report with a severity and priority (decided or
+   automatically suggested) — the "Resolution forecast" panel shows a
+   probability-vs-time curve with median/P90 reference lines, the plain
+   "Likely within X-Y days" sentence, and an "At risk" badge if it's a
+   still-open report already past its own P90 window.
+3. `/triage-queue` shows the same "At risk" badge next to any open report
+   that's overdue, without needing to open it first.
+
+### Real findings from testing against the live stack, not assumed
+
+- The sign-convention bug above (Kaplan-Meier baseline scoring backwards)
+  was caught entirely through manual numeric sanity-checking — not by any
+  automated test, since the original (wrong) test assertions only checked
+  "concordance > 0.5" for both baseline and main model, and a buggy
+  baseline that happened to land just above 0.5 by chance would have
+  passed. Tightened by cross-checking against an oracle risk score built
+  from the bootstrap generator's own true parameters, which is now the
+  pattern worth reusing for any future survival-analysis evaluation code.
+- The exponential-vs-Weibull-PH data-generating mismatch (also above) was
+  only caught by comparing the *trained* model's concordance against that
+  same oracle upper bound at different sample sizes (n=250 and n=2000) —
+  a persistently weak number that didn't improve with 8x more data was the
+  signal that the ceiling itself was low, not that the model needed more
+  examples.
+- **A `.iloc[0]` crash that only surfaced inside the Docker container, not
+  on the host.** `CoxPHFitter.predict_median()`/`predict_percentile()`
+  return a bare `numpy.float64` for a single-row input on the lifelines
+  version the container resolved (0.30.3), but the exact same code path
+  worked fine on the host's separately-resolved lifelines 0.30.0 — a
+  version-sensitive return-type difference, not a typo. Fixed with a small
+  `_as_scalar()` helper that handles either a bare scalar or a length-1
+  Series, and a reminder that **the host's quick numeric checks aren't a
+  substitute for running the real test suite inside the actual container**
+  — they caught the sign-convention and DGP bugs, but not this one.
+- **A real bug found only by looking at the rendered chart, not by any
+  test**: switching the forecast chart's X-axis from a "category" type (one
+  tick per data point, evenly spaced regardless of real time gaps — visibly
+  smooth but mathematically misleading) to a proper `type="number"` axis
+  correctly exposed that recharts' `domain` prop is only a *minimum* range
+  by default — `allowDataOverflow` defaults to `false`, so recharts
+  silently re-widens the axis to fit every data point anyway, squashing a
+  fast-resolving forecast's whole curve into an illegible vertical sliver
+  against a long-tailed outlier's day value. Fixed by zooming the domain to
+  1.5x the forecast's own P90 and setting `allowDataOverflow`, which also
+  needed the two reference-line labels repositioned (they'd been
+  overlapping into unreadable text once the curve was zoomed in).
+- Live walkthrough matched the design: a report without a decided
+  severity/priority yet still produced a forecast from the automated triage
+  suggestion; deciding the triage recomputed the forecast with the final
+  values; backdating a report's `reported_at` past its own predicted P90
+  correctly flipped `at_risk` to `true` and surfaced the "At risk" badge on
+  both the report detail page and the triage queue.
+
 ## Phase 8 — Resolver recommendation and workload-aware assignment (end of Release 2)
 
 **Stories:** US-24 to US-30.

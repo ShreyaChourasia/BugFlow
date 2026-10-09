@@ -18,11 +18,12 @@ from app.schemas.defect import (
     TriageDecisionRequest,
     TriageSuggestionRead,
 )
+from app.schemas.forecast import ForecastRead
 from app.schemas.resolver import (
     AssignmentOverrideRequest,
     ResolverRecommendationsRead,
 )
-from app.services import defect_service, resolver_service, triage_service
+from app.services import defect_service, forecast_service, resolver_service, triage_service
 from app.workers.jobs.defect import rebuild_defect_index_job
 
 router = APIRouter(prefix="/defect-reports", tags=["defect-reports"])
@@ -163,6 +164,19 @@ def override_assignment(
     reason as `Feedback`, the next training signal."""
     report = _get_report_or_404(db, report_id)
     return resolver_service.override_assignment(db, report, body.developer_id, body.reason, triager)
+
+
+@router.get("/{report_id}/forecast", response_model=ForecastRead)
+def get_forecast(
+    report_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> ForecastRead:
+    """US-31/US-32/US-33: a probability curve with median/P90 always
+    stated, a plain-language estimate for the reporter, and an at-risk flag
+    for a still-open defect already past its own P90 window."""
+    report = _get_report_or_404(db, report_id)
+    return forecast_service.get_or_create_forecast(db, report)
 
 
 @router.post("/{report_id}/merge", response_model=DefectReportRead)
