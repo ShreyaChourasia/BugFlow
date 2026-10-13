@@ -68,7 +68,7 @@ def get_pull_request(
     if commit is not None:
         prediction = db.scalar(
             select(RiskPrediction)
-            .where(RiskPrediction.commit_id == commit.id)
+            .where(RiskPrediction.commit_id == commit.id, ~RiskPrediction.is_shadow)
             .order_by(RiskPrediction.created_at.desc())
         )
         if prediction is not None:

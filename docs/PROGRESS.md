@@ -1,5 +1,192 @@
 # Progress log
 
+## Phase 10 — Analytics, model lifecycle, hardening (end of Release 3 — final phase)
+
+**Stories:** US-35, US-37, US-38, US-39, US-40, US-41, US-43, US-45, NFR-US-08,
+NFR-US-11.
+
+### What was built
+
+- **Analytics** (`/analytics/*`, US-37/38/39/40, NFR-US-11): risk trend
+  (weekly mean calibrated probability, real decisions only — shadow rows
+  excluded), acceptance rate per decision type, defect hotspots by
+  component (`"uncategorized"` bucket for reports with none), top risk
+  factors aggregated across every commit's stored SHAP explanation, and a
+  fairness view that reads the junior/senior disparity `MLModel.metrics`
+  already stores at training time (C10) — zero new computation.
+- **Shadow mode** (US-45): `backend/app/models/pull_request.py`'s
+  `RiskPrediction` gained `is_shadow` (migration
+  `a1c3f6d9e2b4_add_is_shadow_to_risk_predictions`). Every real commit-risk
+  prediction now also silently scores whichever model is currently the
+  *challenger* (if one exists), persisted with `is_shadow=True` and no
+  `Explanation` row — it never drives what a user sees, purely a
+  champion/challenger comparison feed. Scope decision in
+  `docs/decisions/008-shadow-mode-scope.md`.
+- **Drift monitoring** (US-41): `bugflow_ml.monitoring.drift` computes
+  Population Stability Index per feature, reusing `reproduce_run()`'s
+  existing `training_commits.json` artifact as the reference distribution
+  against commits mined since training — no new storage. `POST
+  /models/drift-check` persists `DriftAlert` rows for anything scoring
+  above the moderate threshold; `GET /models/drift-alerts` lists them.
+- **Model lifecycle** (US-43): `GET /models`, `POST /models/retrain`
+  (enqueues `retrain_job` on the existing RQ worker, lazy per-branch
+  imports so one retrain doesn't eagerly load all 5 ml stacks), `POST
+  /models/{id}/rollback` (promotes any archived/challenger version back to
+  champion, archiving whoever currently holds it — the exact same
+  promote/demote path every training service's `should_promote` already
+  uses).
+- **Counterfactual guidance** (US-35): `bugflow_ml.explain.counterfactual`
+  grid-searches 10%-90% proportional reductions of actionable features
+  (size/churn/files/directories/subsystems/entropy) against the champion's
+  own calibrated model and the repository's own risk threshold, returning
+  the smallest reduction that would drop risk below threshold, or an
+  honest "no actionable suggestion, request extra review" when even 90%
+  isn't enough. Surfaced as `GET /commits/{sha}/counterfactual` and a "How
+  to lower risk" panel on the PR detail page (shown only for non-"low"
+  risk).
+- **Login rate limiting** (NFR-US-08): `check_login_rate_limit()` in
+  `app/core/security.py` — Redis INCR+EXPIRE, 5 attempts/60s per email,
+  reusing the same Redis client the JWT-revocation blacklist already
+  depends on. Live-verified: 5× wrong password → 401, 6th → 429.
+- **Dependency audits wired into CI**: `pip-audit` (blocking) added to the
+  `backend` and `ml` CI jobs; `npm audit --audit-level=high`
+  (`continue-on-error: true`, with a comment explaining why) added to
+  `frontend`.
+- **Playwright e2e** (`frontend/e2e/`): the pre-merge flow (open a PR from
+  the review queue, see risk + explanation) and the triage flow (file a
+  defect report, see live duplicate suggestions and the triage panel),
+  run against the real `docker compose up` stack, not mocks.
+- **Docs**: `docs/architecture.md` (full rewrite — service table, data-flow
+  diagrams, model lifecycle loop, security summary), 6 model cards under
+  `docs/model-cards/`, `docs/demo-script.md` (full viva walkthrough).
+
+### A real bug found and fixed this phase: shadow rows leaking into two prediction-read endpoints
+
+Shadow scoring (above) persists a second `RiskPrediction` row per commit
+with no matching `Explanation`, by design. Two separate query sites picked
+"the latest `RiskPrediction` for this commit by `created_at`" with no
+`is_shadow` filter — `app/api/risk.py::get_commit_risk()` and
+`app/api/pull_requests.py::get_pull_request()`. Whichever one happened to
+be written last for a given commit — true for any commit re-scored after
+a challenger model existed — could return the shadow row, and the
+PR-detail endpoint actually hit this live: a freshly-replayed PR
+(`repository 126`, PR #555001) came back with a valid
+`probability`/`risk_level` but `explanation_text: ""` and `factors: []`,
+a direct C3 violation (no automated decision without a plain-language
+explanation) that no test had caught because every existing test only
+ever created one `RiskPrediction` row per commit. Fixed by adding
+`~RiskPrediction.is_shadow` to both queries' `.where()` (the first was
+fixed and tested earlier this phase while building shadow mode itself;
+the second was found afterward by exercising the live PR-detail endpoint
+and traced to the exact same missing filter). Verified live via curl
+(explanation/factors now populated) and with a new regression test,
+`test_pull_request_detail_ignores_shadow_rows`, that inserts a shadow row
+*after* the real one specifically to catch the "latest wins" bug.
+
+### Decisions
+
+- **Shadow mode and drift monitoring scoped to commit-risk only**, not all
+  5 models — see `docs/decisions/008-shadow-mode-scope.md`. The other 4
+  models' retrain/rollback lifecycle still works through `/models`; only
+  shadow-scoring and drift-PSI are commit-risk-specific this phase.
+- **No new npm dependency for Playwright's own needs** beyond
+  `@playwright/test` itself; no new Python dependency for drift/
+  counterfactual — both are pure numpy/pandas-level math on top of
+  artifacts the project already produces.
+- **`npm audit fix --force` deliberately not run.** 17 of 18 flagged
+  vulnerabilities require a major version bump (Next.js 14→16, Tailwind
+  3→4, Vitest 1→2) that's out of scope for a hardening pass this late in
+  the project without separately re-testing the whole frontend against a
+  major framework version — documented in CI and here rather than
+  force-upgraded silently. The one safe fix (`source-map-js`) was applied.
+- **`pip-audit` findings assessed, not just listed**: `ecdsa` (Minerva
+  timing-attack CVE, transitive via `python-jose`) is not exploitable here
+  — this app never does ECDSA signing. `python-jose 3.5.0`'s
+  algorithm-confusion CVE is not exploitable here either — `jwt.decode()`
+  already hardcodes `algorithms=["HS256"]`, so there's no asymmetric key
+  for an attacker to substitute. `pip`/`setuptools` findings are build-time
+  tooling, not runtime risk for an already-built container.
+- **RBAC re-audited** (grep every `require_role()` call against the master
+  prompt's role table): no gaps found. Read-only endpoints intentionally
+  open to any authenticated user; webhook routes intentionally skip JWT in
+  favor of HMAC signature verification.
+
+### Real findings from testing against the live stack, not assumed
+
+- **The shadow-row bug above** — found by live-replaying a real PR, not by
+  any unit test, since every existing fixture only ever created one
+  prediction row per commit.
+- **k6 perf rerun** (`scripts/perf/webhook_p95.js`, 5 VUs, 30s, against
+  repo 126's already-mined/trained commit): p95 webhook-to-check-resolved
+  latency came back at **10.34s** against the test's original "adjust once
+  you have a baseline" 5s threshold, with 5 of 66 iterations (~8%) timing
+  out past the script's own 10s poll window. This is slower than any prior
+  phase's informal numbers, and the honest explanation is this phase's own
+  change: every real commit-risk prediction now also scores a second,
+  shadow model synchronously in the same request path, roughly doubling
+  the inference work per webhook under concurrent load. Recorded here
+  as a real number, not adjusted away — a known cost of shadow mode worth
+  revisiting (e.g. moving shadow-scoring onto the worker queue instead of
+  inline) if Release 3 content needed tighter webhook latency.
+- **Shadow comparison, live**: `n_compared=65663`,
+  `mean_absolute_difference=0.0`, `risk_level_agreement_rate=1.0` — the
+  current challenger in this long-lived demo environment happens to have
+  been trained with the exact same seed/data as the champion, so a
+  perfect match is expected and correctly computed, not a bug.
+- **Fairness, live**: junior mean risk 0.182 vs. senior mean risk 0.097
+  (disparity 0.085, i.e. 8.5 percentage points) over 20 junior / 57 senior
+  contributors on the current champion — read straight out of
+  `MLModel.metrics["fairness"]`, no new computation.
+- **Drift-check, live**: `[]` alerts — correctly "available" with zero
+  flagged features, since no commits have been mined for this repository
+  since the champion's own training snapshot.
+- **Playwright `pre-merge-flow.spec.ts` correctly skipped** on its first
+  live run: none of the first 5 PRs in the review queue had a resolvable
+  mlflow artifact (pruned in this long-lived demo environment) — a real,
+  honest finding about accumulated staleness, not a flaky test; the test
+  itself degrades gracefully (`test.skip`) rather than falsely failing.
+- **Playwright `triage-flow.spec.ts`** needed its "Candidate duplicates"
+  assertion timeout bumped to 20s — the first sentence-transformer
+  embedding call after a container restart (this project's well-known
+  cold-start cost) otherwise exceeds Playwright's 5s default. Passes in
+  5.3s once bumped.
+- **Coverage**: 157 backend tests passed, 92% line coverage (comfortably
+  above C5's 80% bar); 88 ml tests passed. Both suites clean under
+  ruff/mypy.
+- **New CLAUDE.md gotchas from this phase** (full text there): `docker
+  compose run --rm api ...` does not itself run `alembic upgrade head` —
+  only the main `api` service's own startup command does, so an ad hoc
+  test run against a freshly-added migration needs it applied explicitly
+  first (caused 18 misleading failures this phase, the first new
+  migration since Phase 1). And: two separate `func.coalesce(...)` calls
+  passed to `.select()` and `.group_by()` aren't recognized as the same
+  expression by Postgres even when they render identically — build the
+  expression once and reuse the object (hit while building
+  `get_hotspots()`).
+
+### Known gaps (explicit scope decisions, not oversights)
+
+- Shadow-scoring runs inline in the prediction request path, not on the
+  worker queue — see the k6 finding above for the latency cost this
+  carries under concurrent load.
+- 17 npm vulnerabilities remain, all behind major version bumps declined
+  this phase (see Decisions).
+- The VS Code extension (US-48, master prompt's optional stretch item) was
+  not built — "only if time allows and I approve" was never requested.
+
+### How to demo it
+
+See `docs/demo-script.md` for the full walkthrough. Short version:
+1. `/analytics` (as `manager@bugflow.demo` or `qa@bugflow.demo`) — risk
+   trend, acceptance rate, hotspots, top risk factors, fairness.
+2. `/models` (as `ml-engineer@bugflow.demo`) — retrain any of the 5
+   model groups, see champion/challenger list, "Make champion" rollback,
+   shadow comparison, "Run drift check now".
+3. Open any non-low-risk PR's detail page — "How to lower risk" panel.
+4. `docker compose run --rm -v "$(pwd)/backend:/app/backend" api sh -c
+   "pip install -e '.[dev]' && alembic upgrade head && python -m pytest -q"`
+   and the `ml` equivalent for the full test suites.
+
 ## Phase 9 — Resolution forecasting
 
 **Stories:** US-31, US-32, US-33.

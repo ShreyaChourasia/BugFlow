@@ -8,7 +8,8 @@
     "start": "next start -p 3000",
     "lint": "next lint",
     "format": "prettier --check .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "next": "14.2.35",
@@ -35,6 +36,7 @@
     "vitest": "2.0.5",
     "@testing-library/react": "16.0.0",
     "@testing-library/jest-dom": "6.4.8",
-    "jsdom": "24.1.1"
+    "jsdom": "24.1.1",
+    "@playwright/test": "1.64.0"
   }
 }

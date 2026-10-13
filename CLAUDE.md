@@ -26,7 +26,7 @@ See master prompt §6. `backend/` = API + workers. `ml/` = installable `bugflow_
 used by both. `frontend/` = Next.js app. `scripts/` = seeding, replay, perf tests.
 
 ## Status
-Phase 9 complete (resolution forecasting: Kaplan-Meier baseline + Cox PH survival model, censored unresolved defects, median/P90/at-risk flag). Phase 8 (resolver recommendation, OR-Tools batch assignment, end of Release 2), Phase 7 (severity/priority classification), Phase 6 (defect reports, duplicate detection), Phase 5 (line-level risk, review queue), and Phase 4 (GitHub App integration, end of Release 1) precede it. See `docs/PROGRESS.md` for what exists and how to demo it.
+Phase 10 complete (analytics, shadow mode, drift monitoring, model retrain/rollback lifecycle, counterfactual guidance, security/perf hardening, documentation) — end of Release 3, final phase. Phase 9 (resolution forecasting), Phase 8 (resolver recommendation, OR-Tools batch assignment, end of Release 2), Phase 7 (severity/priority classification), Phase 6 (defect reports, duplicate detection), Phase 5 (line-level risk, review queue), and Phase 4 (GitHub App integration, end of Release 1) precede it. See `docs/PROGRESS.md` for what exists and how to demo it.
 
 ## Gotchas worth knowing before touching process entrypoints
 - **LightGBM + PyTorch (via sentence-transformers) segfault if torch loads first** in the same process (both bundle their own OpenMP runtime). `app/core/native_libs.py` imports LightGBM first and must stay imported at the top of `app.main`, `app.workers.run`, and `tests/conftest.py`. See `docs/ml.md`'s duplicate-detection section.
@@ -63,3 +63,23 @@ Phase 9 complete (resolution forecasting: Kaplan-Meier baseline + Cox PH surviva
   `ortools`-dependent tests (`ml/tests/test_batch_assignment.py` and anything
   importing `bugflow_ml.assignment`) inside the Docker containers, not the
   host interpreter, if this recurs.
+- **A new Alembic migration isn't applied just by rebuilding images.**
+  `alembic upgrade head` only runs as part of the main `api` service's own
+  startup command — `docker compose run --rm api ...` (what every ad hoc
+  test/verification command in this project uses) shares the same Postgres
+  volume but does **not** re-run that startup command, so a freshly-added
+  column exists in the SQLAlchemy models but not yet in the actual shared
+  dev database. Phase 10 hit this directly: adding
+  `RiskPrediction.is_shadow` caused 18 unrelated-looking test failures
+  (`column "is_shadow" ... does not exist`) until `docker compose run --rm
+  api alembic upgrade head` was run by hand. After adding any migration,
+  apply it explicitly before trusting any test run or live check — don't
+  assume a rebuild did it.
+- **Two separate `func.coalesce(...)` (or any repeated SQL function) calls
+  passed to `.select()` and `.group_by()` aren't recognized as the same
+  expression by Postgres**, even though they render identically — each
+  compiles its own bind parameter, and Postgres then refuses the query
+  ("column ... must appear in the GROUP BY clause"). Build the expression
+  once, assign it to a variable, and reuse that same object in both places
+  (see `analytics_service.py::get_hotspots`, found by a real test failure,
+  not inspection).

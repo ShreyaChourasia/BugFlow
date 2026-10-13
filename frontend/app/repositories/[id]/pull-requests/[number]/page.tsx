@@ -46,6 +46,14 @@ type PullRequestDetail = {
   risk: PullRequestRisk | null;
 };
 
+type Counterfactual = {
+  found: boolean;
+  original_probability: number;
+  new_probability: number | null;
+  reduction_fraction: number | null;
+  text: string;
+};
+
 const CONCLUSION_COLOR: Record<string, string> = {
   success: "text-green-600",
   failure: "text-red-600",
@@ -130,11 +138,23 @@ export default function PullRequestDetailPage() {
   const { id: repositoryId, number } = params;
 
   const [pr, setPr] = useState<PullRequestDetail | null>(null);
+  const [counterfactual, setCounterfactual] = useState<Counterfactual | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetch<PullRequestDetail>(`/repositories/${repositoryId}/pull-requests/${number}`)
-      .then(setPr)
+      .then((loaded) => {
+        setPr(loaded);
+        if (loaded.risk && loaded.risk.risk_level !== "low") {
+          apiFetch<Counterfactual>(
+            `/commits/${loaded.head_sha}/counterfactual?repository_id=${repositoryId}`,
+          )
+            .then(setCounterfactual)
+            .catch(() => {
+              /* counterfactual is supplementary; the risk panel still renders without it */
+            });
+        }
+      })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
           clearTokens();
@@ -219,6 +239,15 @@ export default function PullRequestDetailPage() {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {counterfactual && (
+        <div className="rounded-md border border-border p-4">
+          <h2 className="mb-2 font-medium">How to lower risk</h2>
+          <p className={`text-sm ${counterfactual.found ? "" : "text-amber-600"}`}>
+            {counterfactual.text}
+          </p>
         </div>
       )}
 

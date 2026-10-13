@@ -13,6 +13,14 @@ class ExplanationRead(BaseModel):
     factors: list[dict]
 
 
+class CounterfactualRead(BaseModel):
+    found: bool
+    original_probability: float
+    new_probability: float | None
+    reduction_fraction: float | None
+    text: str
+
+
 class RiskPredictionRead(BaseModel):
     id: int
     commit_id: int | None

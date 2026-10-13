@@ -36,6 +36,8 @@ export function Nav() {
       )}
       {user.role === "developer" && <Link href="/my-assignments">My assignments</Link>}
       {user.role === "manager" && <Link href="/workload">Workload</Link>}
+      {(user.role === "manager" || user.role === "qa") && <Link href="/analytics">Analytics</Link>}
+      {user.role === "ml_engineer" && <Link href="/models">Models</Link>}
       {REPOSITORY_ROLES.has(user.role) && <Link href="/repositories">Repositories</Link>}
       {user.role === "admin" && <Link href="/admin/users">Admin · Users</Link>}
       <span className="text-muted-foreground">
