@@ -24,9 +24,11 @@ the phase-by-phase build plan this project follows — lives in
 
 Built phase by phase, each one fully working and demoable before the next
 starts. **Release 1 is complete** (Phases 0–4), **Release 2 is complete**
-(Phases 5–8), and Phase 9 is done — see
+(Phases 5–8), and **Release 3 is complete** (Phases 9–10) — this is the
+final phase of the project. See
 [`docs/PROGRESS.md`](./docs/PROGRESS.md) for exactly what was built, what
-decisions were made and why, and how to demo each phase.
+decisions were made and why, and how to demo each phase, or
+[`docs/demo-script.md`](./docs/demo-script.md) for a full walkthrough.
 
 | Phase | What it adds | Status |
 |---|---|---|
@@ -40,7 +42,7 @@ decisions were made and why, and how to demo each phase.
 | 7 | Severity/priority classification, triage suggestions, misclassification report | ✅ Done |
 | 8 | Resolver recommendation, capacity-constrained batch assignment (end of Release 2) | ✅ Done |
 | 9 | Resolution forecasting (survival analysis, at-risk flags) | ✅ Done |
-| 10 | Analytics, model lifecycle, guidance, hardening (end of Release 3) | ⏳ Not started |
+| 10 | Analytics, model lifecycle, counterfactual guidance, hardening (end of Release 3) | ✅ Done |
 
 ## Tech stack
 
@@ -52,8 +54,8 @@ decisions were made and why, and how to demo each phase.
 | ML | scikit-learn, LightGBM, SHAP, MLflow, PyDriller (repo mining), sentence-transformers, OR-Tools (batch assignment), lifelines (survival analysis) |
 | Frontend | Next.js (App Router) + TypeScript, Tailwind CSS |
 | Auth | JWT (access + refresh), bcrypt, role-based access control |
-| Testing | pytest, Vitest |
-| Quality | ruff, mypy, ESLint, Prettier, gitleaks |
+| Testing | pytest, Vitest, Playwright (e2e) |
+| Quality | ruff, mypy, ESLint, Prettier, gitleaks, pip-audit, npm audit |
 | CI | GitHub Actions |
 
 ## Quickstart
@@ -258,6 +260,7 @@ Full interactive docs at `/docs` once the API is running. Implemented so far:
 | `GET/POST/PATCH/DELETE /repositories` | Repository management (Admin) |
 | `POST/GET /repositories/{id}/mining-runs`, `.../resume` | Trigger and track git mining |
 | `POST /predict/commit`, `GET /commits/{sha}/risk` | Commit risk scoring + explanation |
+| `GET /commits/{sha}/counterfactual` | Smallest change that would drop risk below threshold (US-35) |
 | `POST /webhooks/github` | GitHub App webhook (HMAC-signed `pull_request` events) |
 | `GET /repositories/{id}/pull-requests`, `.../{number}` | PR list/detail: check status, risk, comment, line-level highlights |
 | `POST /line-risks/{id}/false-alarm` | Mark a highlighted line as a false alarm |
@@ -279,6 +282,10 @@ Full interactive docs at `/docs` once the API is running. Implemented so far:
 | `GET /defect-reports/{id}/forecast` | Probability curve, median/P90, estimate, at-risk flag (US-31/32/33) |
 | `GET/PUT /admin/config`, `GET /admin/audit-log` | System settings (Admin) |
 | `GET/POST/PATCH /users` | User management (Admin) |
+| `GET /analytics/risk-trends`, `/acceptance-rate`, `/hotspots`, `/top-risk-factors`, `/fairness` | Project-wide analytics (Manager/QA, US-37/38/39/40, NFR-US-11) |
+| `GET /models`, `POST /models/retrain`, `POST /models/{id}/rollback` | Model lifecycle (ML Engineer, US-43) |
+| `GET /models/shadow-comparison` | Champion vs. challenger agreement (US-45) |
+| `POST /models/drift-check`, `GET /models/drift-alerts` | Feature drift (PSI) since training (ML Engineer, US-41) |
 
 ## Further reading
 

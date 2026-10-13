@@ -186,3 +186,107 @@ def test_get_commit_risk_returns_the_latest_prediction(
     body = response.json()
     assert body["risk_level"] == "low"
     assert body["explanation"]["text"] == "Low risk change."
+
+
+@pytest.mark.story("US-45")
+def test_get_commit_risk_ignores_shadow_rows(client: TestClient, db_session: Session) -> None:
+    commit = _make_commit(db_session)
+    make_user(db_session, "dev-risk5@example.com", Role.DEVELOPER, password="s3cret")
+    headers = _login(client, "dev-risk5@example.com", "s3cret")
+
+    real = RiskPrediction(
+        commit_id=commit.id,
+        model_version="champion-v1",
+        probability=0.4,
+        calibrated_probability=0.35,
+        confidence=0.3,
+        risk_level="low",
+        latency_ms=5.0,
+    )
+    db_session.add(real)
+    db_session.flush()
+    db_session.add(
+        Explanation(
+            decision_type="RiskPrediction",
+            decision_id=real.id,
+            text="Low risk change.",
+            factors={"items": []},
+        )
+    )
+    # Inserted after the real row, so a naive "latest by created_at" query
+    # would pick this shadow row instead — exactly the bug US-45 introduced
+    # and this test guards against.
+    db_session.add(
+        RiskPrediction(
+            commit_id=commit.id,
+            model_version="challenger-v1",
+            probability=0.9,
+            calibrated_probability=0.9,
+            confidence=0.8,
+            risk_level="high",
+            latency_ms=5.0,
+            is_shadow=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.get(
+        f"/commits/{commit.sha}/risk",
+        params={"repository_id": commit.repository_id},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["risk_level"] == "low"
+    assert response.json()["model_version"] == "champion-v1"
+
+
+@pytest.mark.story("US-35")
+def test_get_commit_counterfactual_returns_the_search_result(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = _make_commit(db_session)
+    make_user(db_session, "dev-risk6@example.com", Role.DEVELOPER, password="s3cret")
+    headers = _login(client, "dev-risk6@example.com", "s3cret")
+
+    from bugflow_ml.explain.counterfactual import CounterfactualResult
+
+    def fake_get_counterfactual(db, commit_arg, risk_threshold, tracking_uri=None):
+        return CounterfactualResult(
+            found=True,
+            original_probability=0.8,
+            new_probability=0.4,
+            reduction_fraction=0.3,
+            text="Splitting this into smaller commits would lower risk from 80% to 40%.",
+        )
+
+    monkeypatch.setattr(risk_module, "get_counterfactual", fake_get_counterfactual)
+
+    response = client.get(
+        f"/commits/{commit.sha}/counterfactual",
+        params={"repository_id": commit.repository_id},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["found"] is True
+    assert body["new_probability"] == 0.4
+    assert "Splitting" in body["text"]
+
+
+@pytest.mark.story("US-35")
+def test_get_commit_counterfactual_503s_without_a_trained_model(
+    client: TestClient, db_session: Session
+) -> None:
+    commit = _make_commit(db_session)
+    make_user(db_session, "dev-risk7@example.com", Role.DEVELOPER, password="s3cret")
+    headers = _login(client, "dev-risk7@example.com", "s3cret")
+
+    response = client.get(
+        f"/commits/{commit.sha}/counterfactual",
+        params={"repository_id": commit.repository_id},
+        headers=headers,
+    )
+
+    assert response.status_code == 503

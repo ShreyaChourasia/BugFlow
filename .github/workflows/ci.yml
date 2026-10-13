@@ -62,6 +62,8 @@ jobs:
         run: pip install -e ./ml
       - name: Install backend
         run: pip install -e "./backend[dev]"
+      - name: Dependency audit (pip-audit)
+        run: pip install pip-audit && pip-audit
       - name: Enable pgvector extension
         run: psql "postgresql://bugflow:bugflow@localhost:5432/bugflow" -c "CREATE EXTENSION IF NOT EXISTS vector"
       - name: Lint (ruff)
@@ -84,6 +86,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
       - name: Install ml package
         run: pip install -e "./ml[dev]"
+      - name: Dependency audit (pip-audit)
+        run: pip install pip-audit && pip-audit
       - name: Lint (ruff)
         run: cd ml && ruff check .
       - name: Type check (mypy)
@@ -104,6 +108,13 @@ jobs:
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      # continue-on-error: several findings only have a fix via a major
+      # version bump (Next.js 14->16, Tailwind 3->4) — a deliberate,
+      # reviewed upgrade, not something to force through CI unattended.
+      # See docs/PROGRESS.md's Phase 10 entry for the full audit findings.
+      - name: Dependency audit (npm audit)
+        run: npm audit --audit-level=high
+        continue-on-error: true
       - run: npm run lint
       - run: npm run format
       - run: npx tsc --noEmit

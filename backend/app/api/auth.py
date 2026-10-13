@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.security import (
+    check_login_rate_limit,
     create_access_token,
     create_refresh_token,
     decode_token,
@@ -22,6 +23,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 @router.post("/login", response_model=TokenPair)
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)) -> TokenPair:
+    check_login_rate_limit(form.username)
     user = db.scalar(select(User).where(User.email == form.username))
     if user is None or not user.is_active or not verify_password(form.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password")

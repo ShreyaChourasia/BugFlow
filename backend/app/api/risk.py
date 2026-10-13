@@ -7,9 +7,15 @@ from app.core.security import get_current_user
 from app.models.commit import Commit
 from app.models.decision import Explanation
 from app.models.pull_request import RiskPrediction
+from app.models.repository import Repository
 from app.models.user import User
-from app.schemas.risk import ExplanationRead, PredictCommitRequest, RiskPredictionRead
-from app.services.prediction_service import predict_commit
+from app.schemas.risk import (
+    CounterfactualRead,
+    ExplanationRead,
+    PredictCommitRequest,
+    RiskPredictionRead,
+)
+from app.services.prediction_service import get_counterfactual, predict_commit
 
 router = APIRouter(tags=["risk"])
 
@@ -75,7 +81,7 @@ def get_commit_risk(
 
     risk_prediction = db.scalar(
         select(RiskPrediction)
-        .where(RiskPrediction.commit_id == commit.id)
+        .where(RiskPrediction.commit_id == commit.id, ~RiskPrediction.is_shadow)
         .order_by(RiskPrediction.created_at.desc())
     )
     if risk_prediction is None:
@@ -90,3 +96,32 @@ def get_commit_risk(
         )
     )
     return _to_read(risk_prediction, explanation)
+
+
+@router.get("/commits/{sha}/counterfactual", response_model=CounterfactualRead)
+def get_commit_counterfactual(
+    sha: str,
+    repository_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> CounterfactualRead:
+    """US-35: "what would lower the risk", or an honest "no actionable
+    suggestion, request extra review" when nothing actionable would help
+    enough."""
+    commit = _get_commit_or_404(db, repository_id, sha)
+    repository = db.get(Repository, repository_id)
+    if repository is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
+
+    try:
+        result = get_counterfactual(db, commit, repository.risk_threshold)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+    return CounterfactualRead(
+        found=result.found,
+        original_probability=result.original_probability,
+        new_probability=result.new_probability,
+        reduction_fraction=result.reduction_fraction,
+        text=result.text,
+    )

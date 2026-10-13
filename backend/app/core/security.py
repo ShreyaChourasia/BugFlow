@@ -19,6 +19,9 @@ settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 _redis = Redis.from_url(settings.redis_url)
 
+LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 60
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -71,9 +74,24 @@ def revoke_token(token: str) -> None:
         _redis.set(f"revoked_jti:{payload['jti']}", "1", ex=ttl)
 
 
-def get_current_user(
-    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
-) -> User:
+def check_login_rate_limit(email: str) -> None:
+    """Phase 10 security pass: throttles login attempts per email via a
+    Redis INCR+EXPIRE counter — reuses the same Redis client the revoked-jti
+    blacklist already depends on, no new service or dependency needed.
+    ponytail: keyed by email only, not email+IP — enough to stop
+    credential-stuffing against one account, the attack this is meant to
+    slow down; a single IP spraying many emails isn't addressed here."""
+    key = f"login_attempts:{email.lower()}"
+    attempts = _redis.incr(key)
+    if attempts == 1:
+        _redis.expire(key, LOGIN_RATE_LIMIT_WINDOW_SECONDS)
+    if attempts > LOGIN_RATE_LIMIT_MAX_ATTEMPTS:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "Too many login attempts — try again shortly"
+        )
+
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     payload = decode_token(token, "access")
     user = db.get(User, int(payload["sub"]))
     if user is None or not user.is_active:

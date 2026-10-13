@@ -120,6 +120,76 @@ def test_pull_request_detail_includes_risk_when_available(
     assert len(risk["factors"]) == 1
 
 
+@pytest.mark.story("US-11")
+def test_pull_request_detail_ignores_shadow_rows(client: TestClient, db_session: Session) -> None:
+    """A shadow (challenger) RiskPrediction has no Explanation row by
+    design — if it sorts latest by created_at and the endpoint doesn't
+    exclude it, explanation_text/factors come back empty even though a
+    real champion prediction with a real explanation exists (C3 violation).
+    Regression test for the same bug already fixed in get_commit_risk."""
+    repo = Repository(name="demo", url="/tmp/x")
+    db_session.add(repo)
+    db_session.commit()
+    commit = Commit(
+        sha="sha1",
+        repository_id=repo.id,
+        message="msg",
+        timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+        features={},
+    )
+    db_session.add(commit)
+    db_session.commit()
+    pr = PullRequest(repository_id=repo.id, number=1, title="t", head_sha="sha1", base_sha="sha0")
+    db_session.add(pr)
+    db_session.commit()
+
+    real_prediction = RiskPrediction(
+        commit_id=commit.id,
+        model_version="v1",
+        probability=0.6,
+        calibrated_probability=0.55,
+        confidence=0.1,
+        risk_level="medium",
+        latency_ms=10.0,
+    )
+    db_session.add(real_prediction)
+    db_session.flush()
+    db_session.add(
+        Explanation(
+            decision_type="RiskPrediction",
+            decision_id=real_prediction.id,
+            text="Explanation text.",
+            factors={"items": []},
+        )
+    )
+    db_session.commit()
+
+    # Inserted after the real row so it wins any "latest by created_at"
+    # query that forgets to filter is_shadow.
+    shadow_prediction = RiskPrediction(
+        commit_id=commit.id,
+        model_version="v2-challenger",
+        probability=0.9,
+        calibrated_probability=0.85,
+        confidence=0.3,
+        risk_level="high",
+        latency_ms=12.0,
+        is_shadow=True,
+    )
+    db_session.add(shadow_prediction)
+    db_session.commit()
+
+    make_user(db_session, "reviewer-pr-shadow@example.com", Role.REVIEWER, password="s3cret")
+    headers = _login(client, "reviewer-pr-shadow@example.com", "s3cret")
+
+    response = client.get(f"/repositories/{repo.id}/pull-requests/1", headers=headers)
+
+    assert response.status_code == 200
+    risk = response.json()["risk"]
+    assert risk["risk_level"] == "medium"
+    assert risk["explanation_text"] == "Explanation text."
+
+
 def test_pull_request_detail_404s_for_unknown_number(
     client: TestClient, db_session: Session
 ) -> None:

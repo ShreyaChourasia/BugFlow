@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.core import security as security_module
 from app.models.enums import Role
 from tests.conftest import make_user
 
@@ -56,6 +57,23 @@ def test_me_returns_current_user(client: TestClient, db_session: Session) -> Non
     assert response.status_code == 200
     assert response.json()["email"] == "dev5@example.com"
     assert response.json()["role"] == "developer"
+
+
+@pytest.mark.story("NFR-US-10")
+def test_login_rate_limits_repeated_attempts(client: TestClient, db_session: Session) -> None:
+    email = "rate-limited@example.com"
+    make_user(db_session, email, Role.DEVELOPER, password="s3cret")
+    security_module._redis.delete(f"login_attempts:{email}")
+
+    try:
+        for _ in range(5):
+            response = client.post("/auth/login", data={"username": email, "password": "wrong"})
+            assert response.status_code == 401
+
+        blocked = client.post("/auth/login", data={"username": email, "password": "wrong"})
+        assert blocked.status_code == 429
+    finally:
+        security_module._redis.delete(f"login_attempts:{email}")
 
 
 @pytest.mark.story("US-01")

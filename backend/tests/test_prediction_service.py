@@ -2,9 +2,11 @@ import time
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.commit import Commit
+from app.models.pull_request import RiskPrediction
 from app.services.prediction_service import predict_commit
 from app.services.training_service import train_and_register_champion
 
@@ -61,3 +63,42 @@ def test_scoring_latency_micro_benchmark(
 
     average_ms = (sum(durations) / len(durations)) * 1000
     assert average_ms < 500, f"scoring averaged {average_ms:.1f}ms per call, expected < 500ms"
+
+
+@pytest.mark.story("US-45")
+def test_predict_commit_also_scores_a_shadow_row_when_a_challenger_exists(
+    db_session: Session, tmp_path: Path
+) -> None:
+    commits = make_commits_for_training(db_session, n=150)
+    tracking_uri = f"sqlite:///{tmp_path}/mlflow.db"
+    train_and_register_champion(db_session, seed=42, tracking_uri=tracking_uri)
+    # Same seed/data again does not beat the existing champion on PR-AUC —
+    # it becomes the challenger, exactly like Phase 7/8/9's analogous tests.
+    train_and_register_champion(db_session, seed=42, tracking_uri=tracking_uri)
+    commit = commits[-1]
+
+    risk_prediction, _explanation = predict_commit(db_session, commit, tracking_uri=tracking_uri)
+
+    rows = list(
+        db_session.scalars(select(RiskPrediction).where(RiskPrediction.commit_id == commit.id))
+    )
+    real_rows = [r for r in rows if not r.is_shadow]
+    shadow_rows = [r for r in rows if r.is_shadow]
+    assert len(real_rows) == 1
+    assert real_rows[0].id == risk_prediction.id
+    assert len(shadow_rows) == 1
+    assert shadow_rows[0].model_version != real_rows[0].model_version
+
+
+@pytest.mark.story("US-45")
+def test_predict_commit_has_no_shadow_row_without_a_challenger(
+    db_session: Session, champion_and_commit: tuple[str, Commit]
+) -> None:
+    tracking_uri, commit = champion_and_commit
+
+    predict_commit(db_session, commit, tracking_uri=tracking_uri)
+
+    rows = list(
+        db_session.scalars(select(RiskPrediction).where(RiskPrediction.commit_id == commit.id))
+    )
+    assert all(not r.is_shadow for r in rows)

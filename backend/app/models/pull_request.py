@@ -62,6 +62,10 @@ class RiskPrediction(Base):
     risk_level: Mapped[str] = mapped_column(String(20))
     latency_ms: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Phase 10 (US-45): a shadow row is the challenger scoring the same
+    # input silently — never surfaced as the real decision, only used for
+    # the champion/challenger comparison page. See docs/decisions/008.
+    is_shadow: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class LineRisk(Base):
