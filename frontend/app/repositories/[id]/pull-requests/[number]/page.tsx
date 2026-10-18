@@ -230,7 +230,9 @@ export default function PullRequestDetailPage() {
               {(pr.risk.confidence * 100).toFixed(0)}%
             </div>
           </div>
-          <p className="text-sm">{pr.risk.explanation_text}</p>
+          <p className="text-sm" data-testid="risk-explanation">
+            {pr.risk.explanation_text}
+          </p>
           <ul className="text-sm space-y-1">
             {pr.risk.factors.map((factor) => (
               <li key={factor.feature} className="text-muted-foreground">

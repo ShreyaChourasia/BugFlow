@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.models.commit import Commit
 from app.models.pull_request import RiskPrediction
-from app.services.prediction_service import predict_commit
+from app.services import prediction_service
+from app.services.prediction_service import predict_commit, score_shadow
 from app.services.training_service import train_and_register_champion
 
 from .conftest import make_commits_for_training
@@ -65,9 +66,24 @@ def test_scoring_latency_micro_benchmark(
     assert average_ms < 500, f"scoring averaged {average_ms:.1f}ms per call, expected < 500ms"
 
 
+class _FakeQueue:
+    def __init__(self) -> None:
+        self.enqueued: list[tuple[object, tuple]] = []
+
+    def enqueue(self, func: object, *args: object) -> None:
+        self.enqueued.append((func, args))
+
+
+@pytest.fixture
+def fake_shadow_queue(monkeypatch: pytest.MonkeyPatch) -> _FakeQueue:
+    queue = _FakeQueue()
+    monkeypatch.setattr(prediction_service, "get_shadow_queue", lambda: queue)
+    return queue
+
+
 @pytest.mark.story("US-45")
-def test_predict_commit_also_scores_a_shadow_row_when_a_challenger_exists(
-    db_session: Session, tmp_path: Path
+def test_predict_commit_queues_shadow_scoring_instead_of_running_it_inline(
+    db_session: Session, tmp_path: Path, fake_shadow_queue: _FakeQueue
 ) -> None:
     commits = make_commits_for_training(db_session, n=150)
     tracking_uri = f"sqlite:///{tmp_path}/mlflow.db"
@@ -78,6 +94,17 @@ def test_predict_commit_also_scores_a_shadow_row_when_a_challenger_exists(
     commit = commits[-1]
 
     risk_prediction, _explanation = predict_commit(db_session, commit, tracking_uri=tracking_uri)
+
+    # Nothing shadow-related happens in the request path, only a queued job.
+    assert [args for _func, args in fake_shadow_queue.enqueued] == [(commit.id,)]
+    assert not any(
+        r.is_shadow
+        for r in db_session.scalars(
+            select(RiskPrediction).where(RiskPrediction.commit_id == commit.id)
+        )
+    )
+
+    score_shadow(db_session, commit, tracking_uri=tracking_uri)  # what the job runs
 
     rows = list(
         db_session.scalars(select(RiskPrediction).where(RiskPrediction.commit_id == commit.id))
@@ -92,11 +119,14 @@ def test_predict_commit_also_scores_a_shadow_row_when_a_challenger_exists(
 
 @pytest.mark.story("US-45")
 def test_predict_commit_has_no_shadow_row_without_a_challenger(
-    db_session: Session, champion_and_commit: tuple[str, Commit]
+    db_session: Session, champion_and_commit: tuple[str, Commit], fake_shadow_queue: _FakeQueue
 ) -> None:
     tracking_uri, commit = champion_and_commit
 
     predict_commit(db_session, commit, tracking_uri=tracking_uri)
+    score_shadow(db_session, commit, tracking_uri=tracking_uri)
+
+    assert fake_shadow_queue.enqueued == []
 
     rows = list(
         db_session.scalars(select(RiskPrediction).where(RiskPrediction.commit_id == commit.id))

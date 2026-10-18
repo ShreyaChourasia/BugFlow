@@ -6,7 +6,7 @@ from rq import SimpleWorker
 from app.core import native_libs  # noqa: F401 -- must load before any job imports torch
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
-from app.core.queue import get_queue
+from app.core.queue import get_queue, get_shadow_queue
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -24,7 +24,9 @@ def main() -> None:
     # RQ's forking at all. Fine to run in-process for one worker replica;
     # ordinary per-job exceptions are still caught (see pr_scoring_service),
     # docker-compose's `restart: unless-stopped` covers the rest.
-    SimpleWorker([queue], connection=queue.connection).work()
+    # Queue order is priority order: shadow jobs only run when "default"
+    # (PR scoring, mining, training) is empty.
+    SimpleWorker([queue, get_shadow_queue()], connection=queue.connection).work()
 
 
 if __name__ == "__main__":

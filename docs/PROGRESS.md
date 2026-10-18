@@ -1,5 +1,62 @@
 # Progress log
 
+## Post-Phase-10 follow-ups (closing Phase 10's known gaps)
+
+### What changed
+
+- **Shadow-scoring moved off the request path** (US-45). `predict_commit`
+  now only scores the champion; if a challenger exists it enqueues
+  `score_shadow_job` on a new low-priority `shadow` RQ queue. The worker
+  listens on `default, shadow` in that order, so a shadow job only runs
+  when no PR-scoring/mining/training job is waiting.
+- **Next.js 14.2.35 → 15.5.28** (with React 19, `@tanstack/react-query`
+  5.104, `recharts` 2.15, `@testing-library/react` 16.3, `postcss` 8.5.30).
+  Every Next.js runtime advisory was fixed in ≥15.5.24, so Next 16 wasn't
+  needed. No code changes were required: every dynamic route is a client
+  component using `useParams()`, so Next 15's async `params` change doesn't
+  apply. Tailwind stays on v3.
+- **CI was red on `main` since Phase 10**: `npm test` (Vitest) picked up the
+  Playwright specs in `e2e/` and failed on them. `vitest.config.ts` now
+  excludes `e2e/**`.
+- **The Playwright pre-merge test "skipping on stale demo data" was really a
+  test bug.** It used `isVisible()`, which checks once without waiting, right
+  after navigating to a page that loads its data client-side, so it always
+  read false and skipped. It now waits up to 10s. Once it actually ran, its
+  final assertion turned out to be wrong too: it assumed the explanation
+  starts with "This change" (it doesn't always) and matched two elements.
+  The explanation `<p>` now has `data-testid="risk-explanation"`, and the
+  test asserts it's non-empty.
+- **Tests no longer leak jobs into the live dev worker.** A `conftest.py`
+  autouse fixture swaps the mining and shadow queues for a no-op.
+  `test_mining_api.py` had been enqueuing real jobs that the worker then ran
+  against rolled-back rows ("MiningRun N not found" in the worker log).
+
+### Measured, not assumed
+
+- **k6** (`scripts/perf/webhook_p95.js`, 5 VUs, 30s, repo 126; same setup as
+  Phase 10): p95 webhook-to-check-resolved **189ms** (was 10.34s), 1071/1071
+  checks resolved, 0 timeouts (was ~8%). All 1071 were real `completed`
+  scores, not fast "unavailable" failures, and the shadow job wrote exactly
+  1071 matching `is_shadow` rows, so the comparison page still gets its data.
+  The improvement is bigger than "half the inference work" would explain.
+  Phase 10's run likely also paid challenger artifact loading inside the
+  measured path; this run can't separate the two effects.
+- **Backend**: 157 passed, 91% coverage. **Frontend**: tsc, ESLint, Prettier,
+  Vitest and `next build` all clean. **Playwright**: both flows pass against
+  the rebuilt `frontend` container.
+- **npm audit after the upgrade**: 16 findings remain. None is in Next.js
+  itself. All are build/dev-time only: Next's bundled `postcss` (processes
+  only this project's own CSS), Tailwind 3's file-watcher chain, the ESLint
+  plugin, and Vitest 2/Vite/tinypool (the critical ones need Vitest's
+  API/UI server to be listening while you browse a malicious site). Clearing
+  them needs Tailwind 4 and Vitest 3, both major upgrades with no runtime
+  benefit.
+
+### Still open (deliberate)
+
+- Shadow mode and drift monitoring remain commit-risk-only (ADR 008).
+- VS Code extension (US-48) is still not built: optional, never approved.
+
 ## Phase 10 — Analytics, model lifecycle, hardening (end of Release 3 — final phase)
 
 **Stories:** US-35, US-37, US-38, US-39, US-40, US-41, US-43, US-45, NFR-US-08,

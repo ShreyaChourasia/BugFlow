@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.queue import get_shadow_queue
 from app.models.commit import Commit
 from app.models.decision import Explanation
 from app.models.ml import MLModel
@@ -113,25 +114,39 @@ def predict_commit(
         factors={"items": explanation_payload["factors"]},
     )
     db.add(explanation)
-    _score_shadow(db, commit, feature_vector, tracking_uri)
     db.commit()
     db.refresh(risk_prediction)
     db.refresh(explanation)
 
+    _enqueue_shadow(db, commit)
     return risk_prediction, explanation
 
 
-def _score_shadow(
-    db: Session, commit: Commit, feature_vector: dict[str, Any], tracking_uri: str | None
-) -> None:
+def _enqueue_shadow(db: Session, commit: Commit) -> None:
+    """US-45: the challenger's score is queued on the low-priority "shadow"
+    queue instead of computed inline — inline shadow-scoring doubled the
+    inference work per webhook and pushed k6's p95 to 10.3s (Phase 10).
+    Never raises: a queue failure must not break the real prediction."""
+    if _get_challenger(db) is None:
+        return
+    from app.workers.jobs.shadow import score_shadow_job
+
+    try:
+        get_shadow_queue().enqueue(score_shadow_job, commit.id)
+    except Exception:
+        logger.warning("shadow_enqueue_failed", commit_id=commit.id)
+
+
+def score_shadow(db: Session, commit: Commit, tracking_uri: str | None = None) -> None:
     """US-45: if a challenger exists, scores it on the same commit too and
     persists the result as `is_shadow=True` — never surfaced as the real
     decision (no Explanation row), purely for the champion/challenger
-    comparison page. Never raises: a shadow-scoring failure must not break
-    the real prediction it rides along with."""
+    comparison page. Never raises: runs in a background job, where a
+    failure should just log."""
     challenger = _get_challenger(db)
     if challenger is None:
         return
+    feature_vector = commit.features or {}
     try:
         raw_model, calibrated_model = _load_artifacts(db, challenger, "shadow", tracking_uri)
         X = np.array([[float(feature_vector.get(col, 0.0)) for col in FEATURE_COLUMNS]])
@@ -151,7 +166,9 @@ def _score_shadow(
                 is_shadow=True,
             )
         )
+        db.commit()
     except Exception:
+        db.rollback()
         logger.warning("shadow_scoring_failed", commit_id=commit.id, challenger_id=challenger.id)
 
 

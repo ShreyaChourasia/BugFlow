@@ -29,7 +29,15 @@ test("opening a pull request from the review queue shows its risk assessment", a
   for (let i = 0; i < Math.min(count, 5); i++) {
     await page.goto("/review-queue");
     await prLinks.nth(i).click();
-    if (await page.getByRole("heading", { name: "Risk assessment" }).isVisible()) {
+    // isVisible() checks once without waiting — the page fetches its data
+    // client-side after navigation, so that always read false and skipped.
+    const heading = page.getByRole("heading", { name: "Risk assessment" });
+    if (
+      await heading.waitFor({ timeout: 10_000 }).then(
+        () => true,
+        () => false,
+      )
+    ) {
       found = true;
       break;
     }
@@ -39,7 +47,6 @@ test("opening a pull request from the review queue shows its risk assessment", a
   await expect(page.getByText("Confidence:")).toBeVisible();
   // C3: no automated decision is ever shown without a plain-language
   // explanation — the one real thing this test exists to catch a
-  // regression in. The explanation sentence always starts with "This
-  // change" (see commit_risk_explainer.py's _sentence_for).
-  await expect(page.getByText("This change", { exact: false })).toBeVisible();
+  // regression in.
+  await expect(page.getByTestId("risk-explanation")).toHaveText(/\w+/);
 });

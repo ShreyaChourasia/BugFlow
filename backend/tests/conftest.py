@@ -34,6 +34,24 @@ def _tables() -> Generator[None, None, None]:
     yield
 
 
+class _DiscardQueue:
+    def enqueue(self, *args: object, **kwargs: object) -> None:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _no_real_queues(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests from pushing jobs into the live dev worker's Redis queue —
+    it then runs them against rows the test already rolled back ("MiningRun
+    N not found" in the worker log). Tests that assert on enqueues patch in
+    their own fake queue on top of this."""
+    from app.api import mining
+    from app.services import prediction_service
+
+    monkeypatch.setattr(prediction_service, "get_shadow_queue", _DiscardQueue)
+    monkeypatch.setattr(mining, "get_queue", _DiscardQueue)
+
+
 @pytest.fixture
 def db_session() -> Generator[Session, None, None]:
     """Each test runs inside an outer transaction that's rolled back afterwards,

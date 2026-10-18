@@ -28,8 +28,9 @@ GitHub webhook ──► API verifies HMAC, enqueues a job, posts "pending" (<50
                         ▼
                   RQ worker: fetch diff → compute commit features →
                   score with the champion model → calibrate → SHAP explain →
-                  (if a challenger exists) also shadow-score it, silently →
-                  edit the existing PR comment, resolve the check
+                  edit the existing PR comment, resolve the check →
+                  (if a challenger exists) queue a shadow-score job on the
+                  low-priority "shadow" queue, run only when "default" is idle
 ```
 Offline-friendly: `scripts/replay_pr_events.py` drives this exact path from
 a local git repo, no GitHub account needed.
