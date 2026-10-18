@@ -257,6 +257,9 @@ def test_fairness_surfaces_the_stored_training_time_report(
                     "junior_count": 10,
                     "senior_count": 20,
                     "disparity": 0.3,
+                    "junior_fpr": 0.4,
+                    "senior_fpr": 0.1,
+                    "fpr_disparity": 0.3,
                 }
             },
             data_version="dv1",
@@ -271,3 +274,5 @@ def test_fairness_surfaces_the_stored_training_time_report(
     body = response.json()
     assert body["status"] == "available"
     assert body["disparity"] == pytest.approx(0.3)
+    assert body["junior_fpr"] == pytest.approx(0.4)
+    assert body["fpr_disparity"] == pytest.approx(0.3)

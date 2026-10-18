@@ -39,8 +39,13 @@ type Fairness = {
   junior_count: number;
   senior_count: number;
   disparity: number | null;
+  junior_fpr: number | null;
+  senior_fpr: number | null;
+  fpr_disparity: number | null;
   model_version: string | null;
 };
+
+const pct = (value: number | null) => (value === null ? "n/a" : `${(value * 100).toFixed(0)}%`);
 
 function useAnalytics<T>(path: string): { data: T | null; error: string | null } {
   const [data, setData] = useState<T | null>(null);
@@ -179,7 +184,9 @@ export default function AnalyticsPage() {
       </section>
 
       <section className="space-y-2">
-        <h2 className="font-medium">Fairness (risk disparity by contributor tenure)</h2>
+        <h2 className="font-medium">
+          Fairness (risk and false-positive rate by contributor tenure)
+        </h2>
         {fairness.error && <p className="text-sm text-red-600">{fairness.error}</p>}
         {fairness.data?.status === "unavailable" && (
           <p className="text-sm text-muted-foreground">
@@ -191,18 +198,29 @@ export default function AnalyticsPage() {
             <p>
               Newer contributors (&lt;6mo):{" "}
               {((fairness.data.junior_mean_risk ?? 0) * 100).toFixed(0)}% mean risk (
-              {fairness.data.junior_count} commits)
+              {fairness.data.junior_count} commits), false-positive rate{" "}
+              {pct(fairness.data.junior_fpr)}
             </p>
             <p>
               Established contributors (&ge;6mo):{" "}
               {((fairness.data.senior_mean_risk ?? 0) * 100).toFixed(0)}% mean risk (
-              {fairness.data.senior_count} commits)
+              {fairness.data.senior_count} commits), false-positive rate{" "}
+              {pct(fairness.data.senior_fpr)}
             </p>
             {fairness.data.disparity !== null && (
               <p className="mt-1 text-muted-foreground">
                 Disparity: {(fairness.data.disparity * 100).toFixed(1)} percentage points
               </p>
             )}
+            {fairness.data.fpr_disparity !== null && (
+              <p className="text-muted-foreground">
+                False-positive rate disparity: {(fairness.data.fpr_disparity * 100).toFixed(1)}{" "}
+                percentage points
+              </p>
+            )}
+            <p className="mt-1 text-xs text-muted-foreground">
+              False-positive rate: share of clean commits the model flagged high-risk (&ge;70%).
+            </p>
           </div>
         )}
       </section>

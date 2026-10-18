@@ -36,3 +36,24 @@ def test_szz_blames_the_commit_that_introduced_the_buggy_line(
 
     assert inducing == {synthetic_repo["c1"]}
     assert synthetic_repo["c2"] not in inducing
+
+
+@pytest.mark.story("US-04")
+def test_szz_skips_commits_listed_in_git_blame_ignore_revs(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    calc = repo / "calc.py"
+
+    calc.write_text("def add(a, b):\n    return a - b\n")
+    origin = commit_all(repo, "c1: add calc")
+    # Not whitespace-only (blame -w alone wouldn't skip it): a formatter run.
+    calc.write_text("def add(a, b):\n    return (a - b)\n")
+    reformat = commit_all(repo, "c2: run formatter")
+    calc.write_text("def add(a, b):\n    return (a + b)\n")
+    fix = commit_all(repo, "c3: fix add, fixes #1")
+
+    assert find_bug_inducing_shas(str(repo), fix) == {reformat}
+
+    (repo / ".git-blame-ignore-revs").write_text(f"# formatter run\n{reformat}\n")
+
+    assert find_bug_inducing_shas(str(repo), fix) == {origin}

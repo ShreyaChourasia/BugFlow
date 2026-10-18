@@ -12,6 +12,7 @@ document reflects what's actually built as of Phase 10 (end of Release 3).
 | `mlflow` | `./mlflow` (build) | Experiment tracking / model registry for every trained model | HTTP GET `/` |
 | `api` | `./backend` (build) | FastAPI application, serves the REST API | HTTP GET `/health` |
 | `worker` | `./backend` (build), `rq worker` entrypoint | Background jobs: mining, scoring, training, retraining | process check |
+| `drift-scheduler` | `./backend` (build), shell loop | Runs `scripts/check_drift.py` every `DRIFT_CHECK_INTERVAL_SECONDS` (US-41) | — |
 | `frontend` | `./frontend` (build) | Next.js UI | HTTP GET `/` |
 
 `backend/` is one installable Python package (`app`) used by both `api` and

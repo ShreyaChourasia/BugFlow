@@ -223,6 +223,13 @@ def test_misclassification_report_counts_corrections_by_suggested_value(
     assert severity_bucket["total_count"] == 1
     assert severity_bucket["correction_rate"] == 1.0
 
+    # Filters: feedback from the future, or for another component, is none.
+    for params in ({"since": "2999-01-01T00:00:00Z"}, {"component": "no-such-component"}):
+        filtered = client.get(
+            "/defect-reports/misclassification-report", headers=triager_headers, params=params
+        ).json()
+        assert filtered == {"severity": [], "priority": []}
+
 
 def test_misclassification_report_requires_appropriate_role(
     client: TestClient, db_session: Session

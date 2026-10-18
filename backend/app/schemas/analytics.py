@@ -49,4 +49,7 @@ class FairnessRead(BaseModel):
     junior_count: int = 0
     senior_count: int = 0
     disparity: float | None = None
+    junior_fpr: float | None = None
+    senior_fpr: float | None = None
+    fpr_disparity: float | None = None
     model_version: str | None = None

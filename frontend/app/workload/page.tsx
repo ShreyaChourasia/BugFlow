@@ -13,17 +13,13 @@ import {
 } from "recharts";
 
 import { ApiError, apiFetch, clearTokens } from "@/lib/api";
-
-type WorkloadEntry = {
-  developer_id: number;
-  developer_name: string;
-  capacity: number;
-  current_queue_depth: number;
-};
+import { DEFAULT_VISIBLE_DEVELOPERS, visibleWorkload, type WorkloadEntry } from "@/lib/workload";
 
 export default function WorkloadPage() {
   const [entries, setEntries] = useState<WorkloadEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const visible = entries ? visibleWorkload(entries, query) : [];
 
   useEffect(() => {
     apiFetch<WorkloadEntry[]>("/assignments/workload")
@@ -55,18 +51,35 @@ export default function WorkloadPage() {
       )}
 
       {entries && entries.length > 0 && (
-        <div className="h-96 rounded-md border border-border p-4">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={entries}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="developer_name" tick={{ fontSize: 12 }} />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="current_queue_depth" name="Current load" fill="#2563eb" />
-              <Bar dataKey="capacity" name="Capacity" fill="#d1d5db" />
-            </BarChart>
-          </ResponsiveContainer>
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <input
+              type="search"
+              aria-label="Search developers"
+              placeholder="Search developers"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="rounded-md border border-border px-3 py-1.5 text-sm"
+            />
+            <span className="text-sm text-muted-foreground">
+              {query
+                ? `${visible.length} matching`
+                : `Top ${Math.min(DEFAULT_VISIBLE_DEVELOPERS, entries.length)} of ${entries.length} by load`}
+            </span>
+          </div>
+          <div className="h-96 rounded-md border border-border p-4">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={visible}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="developer_name" tick={{ fontSize: 12 }} />
+                <YAxis allowDecimals={false} />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="current_queue_depth" name="Current load" fill="#2563eb" />
+                <Bar dataKey="capacity" name="Capacity" fill="#d1d5db" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       )}
     </div>

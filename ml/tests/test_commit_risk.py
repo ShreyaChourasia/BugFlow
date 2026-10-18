@@ -130,11 +130,31 @@ def test_recall_at_20pct_effort_prioritises_by_predicted_risk() -> None:
 def test_fairness_report_without_tenure_data_has_null_fields() -> None:
     import numpy as np
 
-    report = fairness_report(np.array([0.2, 0.8]), [None, None])
+    report = fairness_report(np.array([0.2, 0.8]), np.array([0, 1]), [None, None])
 
     assert report["disparity"] is None
+    assert report["fpr_disparity"] is None
     assert report["junior_count"] == 0
     assert report["senior_count"] == 0
+
+
+@pytest.mark.story("NFR-US-11")
+def test_fairness_report_compares_false_positive_rate_by_tenure() -> None:
+    import numpy as np
+
+    # Flagged = p >= 0.7 (high risk).
+    # Juniors (30 days): 2 clean commits, both flagged -> FPR 1.0.
+    # Seniors (400 days): 2 clean commits, one flagged -> FPR 0.5.
+    # The truly buggy commit (label 1) never counts toward FPR.
+    report = fairness_report(
+        np.array([0.9, 0.8, 0.75, 0.6, 0.95]),
+        np.array([0, 0, 0, 0, 1]),
+        [30, 30, 400, 400, 400],
+    )
+
+    assert report["junior_fpr"] == 1.0
+    assert report["senior_fpr"] == 0.5
+    assert report["fpr_disparity"] == 0.5
 
 
 @pytest.mark.story("US-08")

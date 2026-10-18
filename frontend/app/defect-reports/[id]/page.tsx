@@ -73,7 +73,7 @@ type ForecastCurvePoint = {
 };
 
 type Forecast = {
-  status: "available" | "unavailable";
+  status: "available" | "unavailable" | "insufficient_data";
   median_days: number | null;
   p90_days: number | null;
   curve: ForecastCurvePoint[] | null;
@@ -408,9 +408,16 @@ export default function DefectReportDetailPage() {
       {forecast?.status === "unavailable" && (
         <div className="rounded-md border border-border p-4">
           <h2 className="mb-1 font-medium">Resolution forecast</h2>
+          <p className="text-sm text-muted-foreground">No forecast model has been trained yet.</p>
+        </div>
+      )}
+
+      {forecast?.status === "insufficient_data" && (
+        <div className="rounded-md border border-border p-4">
+          <h2 className="mb-1 font-medium">Resolution forecast</h2>
           <p className="text-sm text-muted-foreground">
-            No forecast model has been trained yet, or this report doesn&apos;t have a
-            severity/priority to forecast from.
+            Not enough information to forecast yet: this report needs a severity and priority
+            (triage it, or add more detail so a severity can be suggested).
           </p>
         </div>
       )}

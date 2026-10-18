@@ -55,16 +55,39 @@ def fake_forecast(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.story("US-31")
-def test_forecast_unavailable_without_a_trained_model_or_severity(
+def test_forecast_reports_insufficient_data_without_a_severity(
     client: TestClient, db_session: Session, repo
 ) -> None:
     make_user(db_session, "reporter-f1@example.com", Role.REPORTER, password="s3cret")
     headers = _login(client, "reporter-f1@example.com", "s3cret")
+    # Too short for triage to suggest a severity, and nobody has triaged it.
     report = _create_report(client, headers, repo, "too short")
 
     response = client.get(f"/defect-reports/{report['id']}/forecast", headers=headers)
 
     assert response.status_code == 200
+    assert response.json()["status"] == "insufficient_data"
+
+
+@pytest.mark.story("US-31")
+def test_forecast_unavailable_without_a_trained_model(
+    client: TestClient, db_session: Session, repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        forecast_prediction_service_module,
+        "get_forecast",
+        lambda db, severity, priority, component, tracking_uri=None: None,
+    )
+    make_user(db_session, "reporter-f1b@example.com", Role.REPORTER, password="s3cret")
+    headers = _login(client, "reporter-f1b@example.com", "s3cret")
+    report = _create_report(client, headers, repo, "too short")
+    row = db_session.get(DefectReport, report["id"])
+    assert row is not None
+    row.severity, row.priority = "major", "P2"
+    db_session.commit()
+
+    response = client.get(f"/defect-reports/{report['id']}/forecast", headers=headers)
+
     assert response.json()["status"] == "unavailable"
 
 

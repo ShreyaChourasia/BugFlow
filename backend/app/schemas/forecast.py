@@ -9,9 +9,10 @@ class ForecastCurvePoint(BaseModel):
 
 
 class ForecastRead(BaseModel):
-    # US-31: "unavailable" (no trained model yet) is distinct from a real
-    # forecast — never silently absent.
-    status: Literal["available", "unavailable"]
+    # US-31: never silently absent. "unavailable" = no trained model yet;
+    # "insufficient_data" = this report has no severity/priority to forecast
+    # from (not triaged, and the triage model abstained).
+    status: Literal["available", "unavailable", "insufficient_data"]
     median_days: float | None = None
     p90_days: float | None = None
     curve: list[ForecastCurvePoint] | None = None

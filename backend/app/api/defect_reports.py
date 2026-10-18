@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -49,11 +51,14 @@ def rebuild_index(
 
 @router.get("/misclassification-report", response_model=MisclassificationReportRead)
 def get_misclassification_report(
+    since: datetime | None = None,
+    component: str | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_role(Role.TRIAGER, Role.ML_ENGINEER, Role.ADMIN)),
 ) -> MisclassificationReportRead:
-    """US-23: which suggested severities/priorities get corrected most often."""
-    return triage_service.get_misclassification_report(db)
+    """US-23: which suggested severities/priorities get corrected most often,
+    optionally since a date and/or for one component."""
+    return triage_service.get_misclassification_report(db, since=since, component=component)
 
 
 @router.get("/suggestions", response_model=SuggestionsRead)

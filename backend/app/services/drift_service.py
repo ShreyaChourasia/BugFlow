@@ -4,7 +4,7 @@ from pathlib import Path
 
 import mlflow
 from bugflow_ml.models.commit_risk import FEATURE_COLUMNS
-from bugflow_ml.monitoring.drift import DEFAULT_PSI_THRESHOLD, compute_feature_drift
+from bugflow_ml.monitoring.drift import compute_feature_drift
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,7 @@ def _set_tracking_uri(tracking_uri: str | None) -> None:
 
 
 def run_drift_check(
-    db: Session, tracking_uri: str | None = None, threshold: float = DEFAULT_PSI_THRESHOLD
+    db: Session, tracking_uri: str | None = None, threshold: float | None = None
 ) -> DriftCheckResult:
     """US-41: PSI per feature, reference vs. current. The reference
     population is exactly the commits the champion was trained on —
@@ -58,6 +58,8 @@ def run_drift_check(
         for col in FEATURE_COLUMNS
     }
 
+    if threshold is None:
+        threshold = get_settings().drift_psi_threshold
     drift_results = compute_feature_drift(reference_features, current_features, threshold)
 
     alerts: list[DriftAlertRead] = []

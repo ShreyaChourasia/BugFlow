@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     github_api_base_url: str = "https://api.github.com"
 
+    # US-41 / §8: "alert when PSI > 0.2 (configurable)". The interval is read
+    # by the `drift-scheduler` compose service's loop.
+    drift_psi_threshold: float = 0.2
+    drift_check_interval_seconds: int = 86400
+
 
 @lru_cache
 def get_settings() -> Settings:

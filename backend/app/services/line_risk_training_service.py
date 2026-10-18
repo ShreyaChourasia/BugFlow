@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.commit import Commit
 from app.models.ml import MLModel
+from app.models.pull_request import LineRisk, RiskPrediction
 from app.models.repository import Repository
 
 logger = get_logger(__name__)
@@ -28,11 +29,30 @@ def _json_safe(value: float) -> float | None:
     return None if isinstance(value, float) and math.isnan(value) else value
 
 
-def _load_line_examples(db: Session) -> list[LineExample]:
+def _false_alarm_keys(db: Session) -> set[tuple[str, str, int]]:
+    """US-15 feedback: (commit sha, file path, line number) of every line a
+    reviewer marked as a false alarm."""
+    rows = db.execute(
+        select(Commit.sha, LineRisk.file_path, LineRisk.line_no)
+        .join(RiskPrediction, LineRisk.prediction_id == RiskPrediction.id)
+        .join(Commit, RiskPrediction.commit_id == Commit.id)
+        .where(LineRisk.marked_false_alarm.is_(True))
+    )
+    return {(sha, path, line_no) for sha, path, line_no in rows}
+
+
+def _load_line_examples(db: Session) -> tuple[list[LineExample], int]:
     """Re-walks each repository's local checkout to recover the added-line
     text mining doesn't persist on `Commit` (see docs/decisions/003 —
     `Commit.features` only stores aggregate numbers). Grouped by repository
-    so each repo is only cloned once, not once per commit."""
+    so each repo is only cloned once, not once per commit.
+
+    Labels are weak (every added line inherits its commit's
+    `is_bug_inducing`), so a reviewer's false-alarm mark overrides that
+    line's label to clean — "retrain from feedback" for this model. Returns
+    the examples and how many labels feedback flipped."""
+    false_alarms = _false_alarm_keys(db)
+    relabelled = 0
     commits = list(db.scalars(select(Commit).order_by(Commit.timestamp)))
     by_repository: dict[int, list[Commit]] = {}
     for commit in commits:
@@ -61,17 +81,21 @@ def _load_line_examples(db: Session) -> list[LineExample]:
             label = label_by_sha[sha]
             for file in mined.files:
                 for line_no, text in file.diff_added:
+                    line_label = label
+                    if label and (sha, file.path, line_no) in false_alarms:
+                        line_label = False
+                        relabelled += 1
                     examples.append(
                         LineExample(
                             text=text,
-                            label=label,
+                            label=line_label,
                             timestamp=timestamp_by_sha[sha],
                             commit_sha=sha,
                             file_path=file.path,
                             line_no=line_no,
                         )
                     )
-    return examples
+    return examples, relabelled
 
 
 def train_and_register_champion(
@@ -79,11 +103,11 @@ def train_and_register_champion(
 ) -> MLModel:
     """US-13/US-14: JITLine-style line-level model, trained on every mined
     repository's added lines with weak labels inherited from their commit's
-    `is_bug_inducing` flag."""
+    `is_bug_inducing` flag, corrected by reviewers' false-alarm feedback."""
     _set_tracking_uri(tracking_uri)
     mlflow.set_experiment(TASK)
 
-    examples = _load_line_examples(db)
+    examples, relabelled = _load_line_examples(db)
     result = train_line_risk(examples, seed=seed)
 
     with mlflow.start_run() as run:
@@ -91,6 +115,7 @@ def train_and_register_champion(
         mlflow.log_param("data_version", result.data_version)
         mlflow.log_param("train_size", result.train_size)
         mlflow.log_param("test_size", result.test_size)
+        mlflow.log_param("feedback_relabelled_lines", relabelled)
 
         for key, value in result.metrics.items():
             if not math.isnan(value):

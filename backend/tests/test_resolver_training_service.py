@@ -11,7 +11,12 @@ from app.models.developer import Developer
 from app.models.enums import Role
 from app.models.ml import MLModel
 from app.models.repository import Repository
-from app.services.resolver_training_service import TASK, train_and_register_champion
+from app.services.resolver_service import override_assignment
+from app.services.resolver_training_service import (
+    TASK,
+    load_labelled_examples,
+    train_and_register_champion,
+)
 
 from .conftest import make_user
 
@@ -103,3 +108,39 @@ def test_training_again_does_not_demote_a_better_champion(
         if m.stage == "champion"
     ]
     assert len(champions) == 1
+
+
+@pytest.mark.story("US-29")
+def test_an_override_becomes_the_training_label_once_resolved(
+    db_session: Session, repo: Repository
+) -> None:
+    """ "Retrain from feedback": an override's target, not the original
+    recommendation, is who the next training run learns from."""
+    manager = make_user(db_session, "manager-override-label@example.com", Role.MANAGER)
+    original, override_target = (
+        Developer(name=f"Dev {i}", skills=["login"], capacity=5, current_queue_depth=0)
+        for i in range(2)
+    )
+    db_session.add_all([original, override_target])
+    db_session.commit()
+    report = DefectReport(
+        repository_id=repo.id,
+        reporter_id=manager.id,
+        title="Login bug",
+        description="the login page throws an error when submitting credentials",
+        status="triaged",
+        component="login",
+        assignee_id=original.id,
+        embedding=embed_text("login bug credentials submit error"),
+        reported_at=datetime(2024, 1, 1, tzinfo=UTC),
+    )
+    db_session.add(report)
+    db_session.commit()
+
+    override_assignment(db_session, report, override_target.id, "knows this module", manager)
+    report.status = "resolved"
+    report.resolved_at = datetime(2024, 1, 2, tzinfo=UTC)
+    db_session.commit()
+
+    labels = {e.developer_id: e.label for e in load_labelled_examples(db_session)}
+    assert labels == {original.id: False, override_target.id: True}

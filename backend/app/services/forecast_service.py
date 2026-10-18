@@ -45,7 +45,7 @@ def get_or_create_forecast(
     defect already past its own P90 window."""
     resolved = _resolve_severity_priority(db, report)
     if resolved is None:
-        return ForecastRead(status="unavailable")
+        return ForecastRead(status="insufficient_data")
     severity, priority = resolved
 
     prediction = forecast_prediction_service.get_forecast(

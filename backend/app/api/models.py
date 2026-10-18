@@ -66,8 +66,8 @@ def shadow_comparison(db: Session = Depends(get_db)) -> ShadowComparisonRead:
 @router.post("/drift-check", response_model=DriftCheckResult)
 def check_drift(db: Session = Depends(get_db)) -> DriftCheckResult:
     """US-41: runs the PSI drift check now (commit-risk only — see
-    docs/decisions/008). `scripts/check_drift.py` runs the same check on a
-    schedule via cron, for the "scheduled" half of this story."""
+    docs/decisions/008). The `drift-scheduler` compose service runs the
+    same check on an interval, for the "scheduled" half of this story."""
     return drift_service.run_drift_check(db)
 
 

@@ -1,5 +1,73 @@
 # Progress log
 
+## Post-Phase-10 follow-ups, round 2 (remaining spec gaps)
+
+### What changed
+
+- **Drift checks now actually run on a schedule** (US-41). Before this, the
+  "scheduled" half only existed as a docstring saying "run via cron", and
+  nothing was set up to do it. A new `drift-scheduler` compose service runs
+  `scripts/check_drift.py` every `DRIFT_CHECK_INTERVAL_SECONDS` (default 1
+  day), so it starts with `docker compose up`. The PSI threshold is now
+  configurable too (`DRIFT_PSI_THRESHOLD`, default 0.2), as §8 asks.
+- **Fairness now compares false-positive rate, not just mean risk**
+  (NFR-US-11, §8). A false positive is a truly clean commit flagged
+  high-risk (p ≥ 0.7, the same as `Repository.risk_threshold`'s default),
+  i.e. what a false alarm costs a reviewer. It's shown on `/analytics`.
+  Champions trained before this change have no FPR stored, and the page
+  shows "n/a" until a retrain.
+- **Line-risk retraining learns from reviewer feedback** (US-15/US-43). A
+  line marked "false alarm" now overrides its weak "buggy" label to clean in
+  the next training run. The count of relabelled lines is logged to MLflow
+  as `feedback_relabelled_lines`. The resolver needed no change: an override
+  sets the report's assignee, and the training label is whoever actually
+  resolved it. A new test proves an override becomes the label.
+- **SZZ honours `.git-blame-ignore-revs`.** PyDriller already blames with
+  `-w`, so whitespace-only reformats were never blamed. Formatter runs a
+  project lists in that file are now skipped as well.
+- **Forecast distinguishes "insufficient data" from "unavailable"** (US-31).
+  `insufficient_data` means the report has no severity/priority to forecast
+  from. `unavailable` means no model has been trained.
+- **Misclassification report** takes optional `since` and `component`
+  filters, and is now one SQL join instead of loading every assessment into
+  memory.
+- **Workload chart** shows the top 20 developers by load relative to
+  capacity, plus a name search. It was unreadable with 72+ developers.
+  Comes with the frontend's first non-trivial unit tests
+  (`lib/workload.test.ts`).
+
+### Measured, not assumed
+
+- **LightGBM tuning tried and rejected.** A 72-config sweep on `six` found
+  calibration PR-AUC barely predicts test PR-AUC (r = 0.10), with only 10/7
+  positives in calibration/test. Adopting a "tuned" config would be fitting
+  noise. Recorded in `docs/ml.md`. The fix is more data, not tuning.
+- **Live FPR**: a fresh commit-risk training run (kept as a challenger, live
+  champion untouched) gives junior FPR 0.0 and senior FPR 0.0. The
+  calibrated model never scores a test commit at or above 0.7 on this small
+  dataset. So nothing was falsely flagged, but nothing was flagged at all.
+- **drift-scheduler, live**: its first run on startup found the champion and
+  correctly reported "no new commits to check".
+- Backend 160 passed (92% coverage), ml 90 passed, frontend 3 Vitest tests,
+  tsc/ESLint/Prettier clean, both Playwright flows pass against the rebuilt
+  containers. (The triage flow can exceed its 20s timeout on the very first
+  run after an api restart, due to the known embedding cold start. It passes
+  on the next run.)
+
+### Still open
+
+- **Evaluation at scale** (§8: ApacheJIT, Eclipse/Mozilla): not done. It
+  needs dataset download and licence verification first (CLAUDE.md: never
+  assume dataset availability). It's the real fix for the model-quality
+  numbers above.
+- **A real GitHub App has never been run live** against this code. That
+  needs a registered app and credentials only the project owner has.
+- PR author is matched only via git email, not GitHub username. Resolver
+  recommendations load full developer history per call. Mining progress is
+  a running count. All fine at this project's scale.
+- Shadow mode and drift for the other 4 models (ADR 008), and the VS Code
+  extension (US-48): deliberately out of scope.
+
 ## Post-Phase-10 follow-ups (closing Phase 10's known gaps)
 
 ### What changed

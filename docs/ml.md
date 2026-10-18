@@ -37,10 +37,12 @@ whichever earlier commit last touched them.
 - **A large reformatting/rename commit can absorb blame it doesn't deserve.**
   If a bug-fixing commit's line was last touched by a big non-semantic
   refactor (rather than the commit that actually introduced the bug), SZZ
-  will name the refactor as bug-inducing. PyDriller supports excluding known
-  "cosmetic" commit hashes from blame (`hashes_to_ignore_path`) to redirect
-  blame further back — not used yet in Phase 2 since it requires first
-  classifying which commits are purely cosmetic, which no phase does yet.
+  will name the refactor as bug-inducing. Partly handled: PyDriller always
+  blames with `git blame -w`, so whitespace-only reformats are already
+  skipped, and if the repository lists formatter runs in a
+  `.git-blame-ignore-revs` file (the git/GitHub convention), those are passed
+  to blame via `hashes_to_ignore_path` too. A non-whitespace refactor the
+  project *doesn't* list (renames, moved code) can still absorb blame.
 - **One fix commit can implicate more than one earlier commit** (one per
   file it touches, potentially more than one per file). `find_bug_inducing_shas`
   returns the union across files as a set — the caller doesn't currently
@@ -102,6 +104,8 @@ database (not scoped to one repository — `MLModel` has no `repository_id` in
    ranking until 20% of total *churn* (not commit count) has been "reviewed",
    and report what fraction of real bug-inducing commits were caught by then.
 5. **Fairness** (C10): `fairness_report()` compares mean predicted risk
+   *and false-positive rate* (share of truly clean commits flagged
+   high-risk, p ≥ 0.7, the same as `Repository.risk_threshold`'s default)
    between contributors with < 6 months and ≥ 6 months of tenure *in this
    repository* (first mined commit → `Developer.joined_at`, not real-world
    onboarding date — see Phase 2's PROGRESS.md note). Always returns the same
@@ -124,6 +128,12 @@ database (not scoped to one repository — `MLModel` has no `repository_id` in
   and visible in MLflow rather than hidden, exactly so a real comparison is
   possible. Revisit once mining a larger corpus (§8's ApacheJIT-scale
   evaluation) makes the comparison meaningful.
+  A tuning sweep was tried and deliberately *not* adopted (post-Phase-10):
+  72 LightGBM configs (num_leaves, min_child_samples, n_estimators,
+  learning_rate) on `six`'s chronological split. The calibration split has
+  only 10 positives and the test split 7, so calibration PR-AUC correlated
+  with test PR-AUC at just r = 0.10, and test PR-AUC ranged 0.12–0.32 across
+  configs. Picking a config by calibration score would be fitting noise.
 
 ## Explanation (`bugflow_ml.explain.commit_risk_explainer`)
 

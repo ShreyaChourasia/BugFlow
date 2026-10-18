@@ -175,37 +175,52 @@ def evaluate_model(
     return metrics
 
 
-def fairness_report(
-    y_prob: np.ndarray, tenure_days: list[float | None], cutoff_days: float = 180
-) -> dict[str, Any]:
-    """C10: risk disparity by contributor tenure, e.g. < 6 months vs >= 6
-    months. Returns None fields when no tenure data is available rather
-    than silently omitting the report — the caller always gets the same
-    shape back."""
-    known = [(p, t) for p, t in zip(y_prob, tenure_days, strict=True) if t is not None]
-    if not known:
-        return {
-            "junior_mean_risk": None,
-            "senior_mean_risk": None,
-            "junior_count": 0,
-            "senior_count": 0,
-            "disparity": None,
-        }
+def _false_positive_rate(pairs: list[tuple[float, int]], threshold: float) -> float | None:
+    """Share of truly clean commits (label 0) the model would flag as risky."""
+    negatives = [p for p, y in pairs if y == 0]
+    if not negatives:
+        return None
+    return float(np.mean([p >= threshold for p in negatives]))
 
-    junior = [p for p, t in known if t < cutoff_days]
-    senior = [p for p, t in known if t >= cutoff_days]
-    junior_mean = float(np.mean(junior)) if junior else None
-    senior_mean = float(np.mean(senior)) if senior else None
-    disparity = None
-    if junior_mean is not None and senior_mean is not None:
-        disparity = abs(junior_mean - senior_mean)
+
+def _abs_diff(a: float | None, b: float | None) -> float | None:
+    return abs(a - b) if a is not None and b is not None else None
+
+
+def fairness_report(
+    y_prob: np.ndarray,
+    y_true: np.ndarray,
+    tenure_days: list[float | None],
+    cutoff_days: float = 180,
+    positive_threshold: float = RISK_HIGH_MIN,
+) -> dict[str, Any]:
+    """C10 / §8: predicted risk *and* false-positive rate by contributor
+    tenure (< 6 months vs >= 6 months). A "positive" is a commit flagged
+    high-risk (p >= 0.7, also `Repository.risk_threshold`'s default) — what
+    a reviewer actually sees as a flag, so what a false alarm costs them. Returns None fields when a value
+    can't be computed rather than silently omitting it — the caller always
+    gets the same shape back."""
+    known = [
+        (float(p), int(y), t)
+        for p, y, t in zip(y_prob, y_true, tenure_days, strict=True)
+        if t is not None
+    ]
+    junior = [(p, y) for p, y, t in known if t < cutoff_days]
+    senior = [(p, y) for p, y, t in known if t >= cutoff_days]
+    junior_mean = float(np.mean([p for p, _ in junior])) if junior else None
+    senior_mean = float(np.mean([p for p, _ in senior])) if senior else None
+    junior_fpr = _false_positive_rate(junior, positive_threshold)
+    senior_fpr = _false_positive_rate(senior, positive_threshold)
 
     return {
         "junior_mean_risk": junior_mean,
         "senior_mean_risk": senior_mean,
         "junior_count": len(junior),
         "senior_count": len(senior),
-        "disparity": disparity,
+        "disparity": _abs_diff(junior_mean, senior_mean),
+        "junior_fpr": junior_fpr,
+        "senior_fpr": senior_fpr,
+        "fpr_disparity": _abs_diff(junior_fpr, senior_fpr),
     }
 
 
@@ -248,7 +263,7 @@ def train_commit_risk(
     baseline_metrics = evaluate_model(baseline_model, X_test, y_test, churn_test)
 
     test_probabilities = calibrated_model.predict_proba(X_test)[:, 1]
-    fairness = fairness_report(test_probabilities, [c.author_tenure_days for c in test])
+    fairness = fairness_report(test_probabilities, y_test, [c.author_tenure_days for c in test])
 
     all_ids = [c.id for c in train] + [c.id for c in calib] + [c.id for c in test]
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """US-41: runs the commit-risk PSI drift check and prints any alerts it
-raised. Meant to be run on a schedule (cron, or a CI scheduled workflow) —
-see docs/decisions/008-shadow-mode-scope.md for why this is a script rather
-than an in-process scheduler, and why it's scoped to commit-risk only.
+raised. The `drift-scheduler` compose service runs it every
+DRIFT_CHECK_INTERVAL_SECONDS; see docs/decisions/008-shadow-mode-scope.md
+for why it's scoped to commit-risk only.
 
 Usage (inside the api container, which has `app` installed):
     docker compose exec api python /app/scripts/check_drift.py

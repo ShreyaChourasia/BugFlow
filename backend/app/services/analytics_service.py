@@ -145,5 +145,9 @@ def get_fairness(db: Session) -> FairnessRead:
         junior_count=fairness.get("junior_count", 0),
         senior_count=fairness.get("senior_count", 0),
         disparity=fairness.get("disparity"),
+        # Absent (None) on champions trained before FPR was added.
+        junior_fpr=fairness.get("junior_fpr"),
+        senior_fpr=fairness.get("senior_fpr"),
+        fpr_disparity=fairness.get("fpr_disparity"),
         model_version=champion.version,
     )

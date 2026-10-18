@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from bugflow_ml.models.triage_classifier import should_abstain
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -145,33 +147,36 @@ def _buckets(totals: dict[str, int], corrections: dict[str, int]) -> list[Miscla
     )
 
 
-def get_misclassification_report(db: Session) -> MisclassificationReportRead:
+def get_misclassification_report(
+    db: Session, since: datetime | None = None, component: str | None = None
+) -> MisclassificationReportRead:
     """US-23: which suggested severities/priorities get corrected most
     often — only counts feedback tied to a real automated suggestion, not
-    reports a human classified with no suggestion to react to."""
-    assessments_by_id = {
-        a.id: a for a in db.scalars(select(TriageAssessment).where(TriageAssessment.is_automated))
-    }
-    feedback_rows = db.scalars(select(Feedback).where(Feedback.decision_type == DECISION_TYPE))
+    reports a human classified with no suggestion to react to. Optionally
+    narrowed to feedback given since a date, and/or one component."""
+    query = (
+        select(TriageAssessment.severity, TriageAssessment.priority, Feedback.accepted)
+        .join(TriageAssessment, Feedback.decision_id == TriageAssessment.id)
+        .where(Feedback.decision_type == DECISION_TYPE, TriageAssessment.is_automated)
+    )
+    if since is not None:
+        query = query.where(Feedback.created_at >= since)
+    if component is not None:
+        query = query.join(DefectReport, TriageAssessment.defect_id == DefectReport.id).where(
+            DefectReport.component == component
+        )
 
     severity_totals: dict[str, int] = {}
     severity_corrections: dict[str, int] = {}
     priority_totals: dict[str, int] = {}
     priority_corrections: dict[str, int] = {}
 
-    for row in feedback_rows:
-        assessment = assessments_by_id.get(row.decision_id)
-        if assessment is None:
-            continue
-        severity_totals[assessment.severity] = severity_totals.get(assessment.severity, 0) + 1
-        priority_totals[assessment.priority] = priority_totals.get(assessment.priority, 0) + 1
-        if not row.accepted:
-            severity_corrections[assessment.severity] = (
-                severity_corrections.get(assessment.severity, 0) + 1
-            )
-            priority_corrections[assessment.priority] = (
-                priority_corrections.get(assessment.priority, 0) + 1
-            )
+    for severity, priority, accepted in db.execute(query):
+        severity_totals[severity] = severity_totals.get(severity, 0) + 1
+        priority_totals[priority] = priority_totals.get(priority, 0) + 1
+        if not accepted:
+            severity_corrections[severity] = severity_corrections.get(severity, 0) + 1
+            priority_corrections[priority] = priority_corrections.get(priority, 0) + 1
 
     return MisclassificationReportRead(
         severity=_buckets(severity_totals, severity_corrections),

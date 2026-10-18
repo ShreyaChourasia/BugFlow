@@ -93,6 +93,29 @@ services:
       timeout: 5s
       retries: 10
 
+  # US-41: the "scheduled" half of the PSI drift check. A shell loop rather
+  # than a scheduler library — one job, one interval (DRIFT_CHECK_INTERVAL_SECONDS).
+  drift-scheduler:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - >-
+        while true; do
+        python /app/scripts/check_drift.py || echo "drift check failed";
+        sleep "$${DRIFT_CHECK_INTERVAL_SECONDS:-86400}";
+        done
+    env_file:
+      - .env
+    volumes:
+      - mlflow_data:/mlflow
+    depends_on:
+      api:
+        condition: service_healthy
+
   frontend:
     build:
       context: ./frontend

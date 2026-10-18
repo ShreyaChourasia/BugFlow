@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.commit import Commit
 from app.services.drift_service import run_drift_check
 from app.services.training_service import train_and_register_champion
@@ -19,7 +20,9 @@ def test_drift_check_unavailable_without_a_champion(db_session: Session) -> None
 
 
 @pytest.mark.story("US-41")
-def test_drift_check_flags_a_genuinely_shifted_feature(db_session: Session, tmp_path: Path) -> None:
+def test_drift_check_flags_a_genuinely_shifted_feature(
+    db_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     training_commits = make_commits_for_training(db_session, n=150)
     tracking_uri = f"sqlite:///{tmp_path}/mlflow.db"
     train_and_register_champion(db_session, seed=42, tracking_uri=tracking_uri)
@@ -68,3 +71,8 @@ def test_drift_check_flags_a_genuinely_shifted_feature(db_session: Session, tmp_
     # land in the top severity bucket regardless of which other features a
     # small current sample happens to nudge past the threshold by chance.
     assert alerts_by_feature["churn"].severity == "severe"
+
+    # §8: the threshold is configurable (DRIFT_PSI_THRESHOLD) — raise it far
+    # past any real PSI and the same shift no longer raises an alert.
+    monkeypatch.setattr(get_settings(), "drift_psi_threshold", 1e6)
+    assert run_drift_check(db_session, tracking_uri=tracking_uri).alerts == []
