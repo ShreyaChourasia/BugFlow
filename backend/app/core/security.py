@@ -4,9 +4,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import bcrypt
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
 from redis import Redis
 from sqlalchemy.orm import Session
 
@@ -56,7 +56,7 @@ def create_refresh_token(user_id: int) -> str:
 def decode_token(token: str, expected_type: str) -> dict[str, Any]:
     try:
         payload: dict[str, Any] = jwt.decode(token, settings.jwt_secret_key, algorithms=["HS256"])
-    except JWTError as exc:
+    except jwt.PyJWTError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token") from exc
 
     if payload.get("type") != expected_type:

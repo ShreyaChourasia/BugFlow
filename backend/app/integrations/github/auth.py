@@ -2,7 +2,7 @@ import time
 from pathlib import Path
 
 import httpx
-from jose import jwt
+import jwt
 
 
 def create_app_jwt(app_id: str, private_key_path: str) -> str:

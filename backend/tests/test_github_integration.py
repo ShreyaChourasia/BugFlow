@@ -1,10 +1,10 @@
 from pathlib import Path
 
 import httpx
+import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwt
 
 from app.integrations.github.auth import create_app_jwt, get_installation_token
 from app.integrations.github.client import (
@@ -79,7 +79,7 @@ def rsa_private_key_path(tmp_path: Path) -> str:
 def test_create_app_jwt_has_the_expected_claims(rsa_private_key_path: str) -> None:
     token = create_app_jwt("12345", rsa_private_key_path)
 
-    claims = jwt.get_unverified_claims(token)
+    claims = jwt.decode(token, options={"verify_signature": False})
     assert claims["iss"] == "12345"
     assert claims["exp"] > claims["iat"]
 

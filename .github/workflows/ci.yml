@@ -63,7 +63,7 @@ jobs:
       - name: Install backend
         run: pip install -e "./backend[dev]"
       - name: Dependency audit (pip-audit)
-        run: pip install pip-audit && pip-audit
+        run: pip install -U pip setuptools pip-audit && pip-audit
       - name: Enable pgvector extension
         run: psql "postgresql://bugflow:bugflow@localhost:5432/bugflow" -c "CREATE EXTENSION IF NOT EXISTS vector"
       - name: Lint (ruff)
@@ -87,7 +87,7 @@ jobs:
       - name: Install ml package
         run: pip install -e "./ml[dev]"
       - name: Dependency audit (pip-audit)
-        run: pip install pip-audit && pip-audit
+        run: pip install -U pip setuptools pip-audit && pip-audit
       - name: Lint (ruff)
         run: cd ml && ruff check .
       - name: Type check (mypy)
