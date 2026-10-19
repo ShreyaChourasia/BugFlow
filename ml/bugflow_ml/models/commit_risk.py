@@ -197,9 +197,9 @@ def fairness_report(
     """C10 / §8: predicted risk *and* false-positive rate by contributor
     tenure (< 6 months vs >= 6 months). A "positive" is a commit flagged
     high-risk (p >= 0.7, also `Repository.risk_threshold`'s default) — what
-    a reviewer actually sees as a flag, so what a false alarm costs them. Returns None fields when a value
-    can't be computed rather than silently omitting it — the caller always
-    gets the same shape back."""
+    a reviewer actually sees as a flag, so what a false alarm costs them.
+    Returns None fields when a value can't be computed rather than silently
+    omitting it — the caller always gets the same shape back."""
     known = [
         (float(p), int(y), t)
         for p, y, t in zip(y_prob, y_true, tenure_days, strict=True)
