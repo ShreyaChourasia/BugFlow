@@ -9,7 +9,7 @@ import { expect, test } from "@playwright/test";
 
 test("filing a defect report surfaces duplicate and triage suggestions", async ({ page }) => {
   await page.goto("/login");
-  await page.getByLabel("Email").fill("reporter@bugflow.demo");
+  await page.getByLabel("Account").selectOption("reporter@bugflow.demo");
   await page.getByLabel("Password").fill("bugflow-demo");
   await page.getByRole("button", { name: "Log in" }).click();
   await expect(page.getByText("Reporter", { exact: false })).toBeVisible();

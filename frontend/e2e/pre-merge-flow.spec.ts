@@ -9,7 +9,7 @@ import { expect, test } from "@playwright/test";
 
 test("opening a pull request from the review queue shows its risk assessment", async ({ page }) => {
   await page.goto("/login");
-  await page.getByLabel("Email").fill("reviewer@bugflow.demo");
+  await page.getByLabel("Account").selectOption("reviewer@bugflow.demo");
   await page.getByLabel("Password").fill("bugflow-demo");
   await page.getByRole("button", { name: "Log in" }).click();
   await expect(page.getByText("Reviewer", { exact: false })).toBeVisible();
